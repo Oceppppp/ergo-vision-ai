@@ -10,6 +10,7 @@ import { calibrateFromAnthropometry } from '../calibration';
 import { computeNioshLiveGeometry, extractBodyAngles, LM } from '../geometry';
 import { evaluateFullNiosh } from '../niosh';
 import { calculateReba } from '../reba';
+import { buildErgonomicSummary } from '../recommendations';
 import { calculateRula } from '../rula';
 import { fitImagePreserveAspect, generateWorksheetDocx, readPngDimensions } from '../../export/docxExporter';
 import { computeCrispCanvasSize } from '../../vision/overlayRenderer';
@@ -366,5 +367,88 @@ describe('Anthropometric Calibration & Geometry', () => {
     const fittedLandscape = fitImagePreserveAspect(1280, 720, 500, 420);
     expect(fittedLandscape.width).toBe(500);
     expect(fittedLandscape.height).toBe(281);
+  });
+
+  it('generates distinct video-aware and parameter-aware conclusions & prioritized recommendations without Infinity', () => {
+    const hillary = CLASS_ANTHROPOMETRY.find((s) => s.id === 'hillary')!;
+    const evan = CLASS_ANTHROPOMETRY.find((s) => s.id === 'evan')!;
+
+    const hillaryParams: TaskParameters = {
+      department: 'Rumah',
+      jobTitle: 'Mahasiswa',
+      jobDescription: 'Angkat kardus ke meja',
+      analystName: 'Hillary',
+      date: '2026-11-26',
+      loadWeightKg: 5,
+      objectLengthCm: 35,
+      objectWidthCm: 24,
+      objectHeightCm: 10,
+      liftDirection: 'lifting',
+      originSurface: 'lantai',
+      originHeightCm: 0,
+      destinationSurface: 'meja',
+      destinationHeightCm: 80,
+      frequencyPerMin: 2,
+      durationCategory: 'short',
+      coupling: 'poor',
+      significantControl: true,
+      staticPostureOver1Min: false,
+      rapidLargeChange: false,
+      shockOrForceBuildup: false,
+      armSupported: false,
+      useSlide41Rounding: true,
+    };
+    const origH = { H: 55.3, V: 12, A: 12.8 };
+    const destH = { H: 67.7, V: 112.6, A: 43.7 };
+    const nioshH = evaluateFullNiosh(origH, destH, hillaryParams);
+    const summaryH = buildErgonomicSummary({
+      profile: hillary,
+      params: hillaryParams,
+      originPoint: origH,
+      destinationPoint: destH,
+      niosh: nioshH,
+      originCapture: null,
+      destinationCapture: null,
+      timelineSamples: [],
+    });
+
+    const fullTextH = [...summaryH.conclusions, ...summaryH.recommendations.map((r) => `${r.title} ${r.detail}`)].join(' ');
+    expect(fullTextH).not.toContain('Infinity');
+    expect(fullTextH).toContain('Hillary');
+    expect(fullTextH).toContain('Meja Kerja / Timbangan (80 cm)');
+    expect(fullTextH).toContain('45,3'); // Hillary's knee height D7
+    expect(summaryH.recommendations[0].priority).toBe('Kritis');
+    expect(summaryH.recommendations[0].detail).toContain('67,7 cm');
+
+    // Contrast with a safe neutral task for Evan
+    const evanParams: TaskParameters = {
+      ...hillaryParams,
+      analystName: 'Evan',
+      loadWeightKg: 3,
+      originSurface: 'meja',
+      originHeightCm: 80,
+      destinationSurface: 'troli',
+      destinationHeightCm: 85,
+      frequencyPerMin: 0.5,
+      coupling: 'good',
+    };
+    const origE = { H: 25, V: 85, A: 0 };
+    const destE = { H: 25, V: 90, A: 0 };
+    const nioshE = evaluateFullNiosh(origE, destE, evanParams);
+    const summaryE = buildErgonomicSummary({
+      profile: evan,
+      params: evanParams,
+      originPoint: origE,
+      destinationPoint: destE,
+      niosh: nioshE,
+      originCapture: null,
+      destinationCapture: null,
+      timelineSamples: [],
+    });
+
+    expect(summaryE.recommendations).toHaveLength(1);
+    expect(summaryE.recommendations[0].priority).toBe('Pemeliharaan');
+    expect(summaryE.recommendations[0].detail).toContain('Evan');
+    expect(summaryE.recommendations[0].detail).toContain('Troli / Keranjang (85 cm)');
   });
 });

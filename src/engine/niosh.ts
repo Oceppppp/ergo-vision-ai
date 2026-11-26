@@ -221,8 +221,11 @@ export function evaluateFullNiosh(
     );
   }
   if (governingLI > 1.0) {
+    const liText = Number.isFinite(governingLI)
+      ? `LI = ${governingLI} (> 1)`
+      : `RWL = 0 kg (batas variabel NIOSH terlampaui)`;
     redesignSuggestions.push(
-      `Karena LI = ${governingLI} (> 1), prioritaskan perancangan ulang tempat kerja, pengurangan berat beban/kemasan, rotasi kerja, atau penggunaan alat bantu mekanis seperti troli (Slide 12 & 35).`
+      `Karena ${liText}, prioritaskan perancangan ulang tempat kerja, pengurangan berat beban/kemasan, rotasi kerja, atau penggunaan alat bantu mekanis seperti troli (Slide 12 & 35).`
     );
   } else if (redesignSuggestions.length === 0) {
     redesignSuggestions.push(

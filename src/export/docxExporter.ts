@@ -14,6 +14,7 @@ import {
   WidthType,
 } from 'docx';
 import { formatPlacementLabel } from '../data/placement';
+import { buildErgonomicSummary } from '../engine/recommendations';
 import type {
   CapturedMoment,
   NioshFullResult,
@@ -355,24 +356,47 @@ export async function generateWorksheetDocx(payload: DocxExportPayload): Promise
         }),
       ],
     }),
-    new Paragraph({ spacing: { before: 80, after: 40 }, children: [] }),
-    bodyLine(
-      'Kesimpulan NIOSH: ',
-      `Nilai LI penentu berada pada posisi ${niosh.governingSide.toUpperCase()} sebesar ${fmtComma(niosh.governingLI)} (${
-        niosh.isSafe ? 'AMAN / LI ≤ 1' : 'BERISIKO CEDERA / LI > 1'
-      }). Faktor penurun RWL terbesar: ${
-        niosh.governingSide === 'destination' ? niosh.destination.limitingFactor : niosh.origin.limitingFactor
-      }.`
-    ),
   ];
 
-  // Redesign suggestions
-  children.push(heading('Rekomendasi Perancangan Ulang Ergonomi (Berdasarkan Materi NIOSH)', 11));
-  niosh.redesignSuggestions.forEach((s, idx) => {
+  const summary = buildErgonomicSummary({
+    profile,
+    params,
+    originPoint,
+    destinationPoint,
+    niosh,
+    originCapture,
+    destinationCapture,
+    timelineSamples,
+  });
+
+  // Dynamic Conclusions & Prioritized Redesign Recommendations
+  children.push(heading('KESIMPULAN ANALISIS VIDEO & PARAMETER TUGAS', 11));
+  summary.conclusions.forEach((line, idx) => {
     children.push(
       new Paragraph({
-        spacing: { before: 20, after: 30 },
-        children: [new TextRun({ text: `${idx + 1}. ${s}`, font: 'Times New Roman', size: 20 })],
+        spacing: { before: 20, after: 40 },
+        children: [new TextRun({ text: `${idx + 1}. ${line}`, font: 'Times New Roman', size: 20 })],
+      })
+    );
+  });
+
+  children.push(heading('REKOMENDASI PERANCANGAN ULANG ERGONOMI (URUTAN PRIORITAS)', 11));
+  summary.recommendations.forEach((rec, idx) => {
+    children.push(
+      new Paragraph({
+        spacing: { before: 40, after: 20 },
+        children: [
+          new TextRun({
+            text: `${idx + 1}. [${rec.priority.toUpperCase()}] ${rec.title} (${rec.reference})`,
+            bold: true,
+            font: 'Times New Roman',
+            size: 20,
+          }),
+        ],
+      }),
+      new Paragraph({
+        spacing: { before: 0, after: 45 },
+        children: [new TextRun({ text: rec.detail, font: 'Times New Roman', size: 19.5 })],
       })
     );
   });

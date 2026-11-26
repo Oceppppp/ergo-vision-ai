@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Download, FileText, Image as ImageIcon, Printer } from 'lucide-react';
 import { formatPlacementLabel } from '../data/placement';
+import { buildErgonomicSummary, type RecommendationPriority } from '../engine/recommendations';
 import { generateWorksheetDocx } from '../export/docxExporter';
 import type {
   CapturedMoment,
@@ -50,6 +51,28 @@ export const WorksheetReport: React.FC<WorksheetReportProps> = ({
 }) => {
   const [exportingDocx, setExportingDocx] = useState(false);
   const [exportingPng, setExportingPng] = useState(false);
+
+  const summary = useMemo(
+    () =>
+      buildErgonomicSummary({
+        profile,
+        params,
+        originPoint,
+        destinationPoint,
+        niosh,
+        originCapture,
+        destinationCapture,
+        timelineSamples,
+      }),
+    [profile, params, originPoint, destinationPoint, niosh, originCapture, destinationCapture, timelineSamples]
+  );
+
+  const priorityBadgeClass = (p: RecommendationPriority): string => {
+    if (p === 'Kritis') return 'bg-red-100 text-red-800 border-red-200';
+    if (p === 'Tinggi') return 'bg-orange-100 text-orange-800 border-orange-200';
+    if (p === 'Sedang') return 'bg-amber-100 text-amber-800 border-amber-200';
+    return 'bg-emerald-100 text-emerald-800 border-emerald-200';
+  };
 
   const handleDownloadDocx = async () => {
     setExportingDocx(true);
@@ -413,22 +436,61 @@ export const WorksheetReport: React.FC<WorksheetReportProps> = ({
         </div>
       </div>
 
-      {/* Recommendations Box */}
-      <div className="rounded-xl border border-[#D8E0E8] bg-[#F8FAFC] p-4">
-        <div className="mb-1.5 flex items-center justify-between">
-          <h3 className="text-xs font-extrabold uppercase tracking-wide text-[#142130]">
-            Kesimpulan &amp; Rekomendasi Perancangan Ulang Ergonomi
-          </h3>
+      {/* Dynamic Video-Aware Conclusions & Prioritized Recommendations */}
+      <div className="rounded-xl border border-[#D8E0E8] bg-[#F8FAFC] p-4 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2.5">
+          <div>
+            <h3 className="text-xs font-extrabold uppercase tracking-wide text-[#142130]">
+              Kesimpulan Analisis Video &amp; Rekomendasi Perancangan Ulang Ergonomi
+            </h3>
+            <p className="text-[11px] text-[#516275]">
+              Disusun otomatis dari rekaman video ({profile.name}), skor REBA/RULA, zona antropometri personal, dan input Parameter Tugas.
+            </p>
+          </div>
           <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#0F5BD8]">
             <Download className="h-3.5 w-3.5" />
             Otomatis masuk ke file .docx
           </span>
         </div>
-        <ul className="list-disc space-y-1 pl-5 text-xs text-[#334155]">
-          {niosh.redesignSuggestions.map((item, idx) => (
-            <li key={idx}>{item}</li>
-          ))}
-        </ul>
+
+        {/* Conclusions */}
+        <div>
+          <h4 className="mb-1.5 text-xs font-bold text-[#142130]">A. Kesimpulan Hasil Analisis</h4>
+          <ul className="list-disc space-y-1.5 pl-5 text-xs leading-relaxed text-[#334155]">
+            {summary.conclusions.map((item, idx) => (
+              <li key={idx}>{item}</li>
+            ))}
+          </ul>
+        </div>
+
+        {/* Prioritized Recommendations */}
+        <div>
+          <h4 className="mb-2 text-xs font-bold text-[#142130]">
+            B. Rekomendasi Perancangan Ulang Ergonomi (Urutan Prioritas)
+          </h4>
+          <div className="space-y-2">
+            {summary.recommendations.map((rec, idx) => (
+              <div key={idx} className="rounded-lg border border-[#E2E8F0] bg-white p-3">
+                <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`rounded border px-1.5 py-0.5 text-[10px] font-bold uppercase ${priorityBadgeClass(
+                        rec.priority
+                      )}`}
+                    >
+                      {rec.priority}
+                    </span>
+                    <span className="text-xs font-bold text-[#142130]">
+                      {idx + 1}. {rec.title}
+                    </span>
+                  </div>
+                  <span className="font-numeric text-[10.5px] font-semibold text-slate-500">{rec.reference}</span>
+                </div>
+                <p className="text-xs leading-relaxed text-[#475569]">{rec.detail}</p>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     </section>
   );
