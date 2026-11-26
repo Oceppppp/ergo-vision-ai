@@ -13,6 +13,7 @@ import {
   VerticalAlign,
   WidthType,
 } from 'docx';
+import { formatPlacementLabel } from '../data/placement';
 import type {
   CapturedMoment,
   NioshFullResult,
@@ -184,7 +185,15 @@ export async function generateWorksheetDocx(payload: DocxExportPayload): Promise
           children: [
             cell(`JOB TITLE: ${params.jobTitle}`, { align: AlignmentType.LEFT, widthPct: 50 }),
             cell(
-              `OBJEK: ${params.loadWeightKg} kg (P ${params.objectLengthCm} × L ${params.objectWidthCm} × T ${params.objectHeightCm} cm, Rak ${params.shelfHeightCm} cm)`,
+              `OBJEK: ${params.loadWeightKg} kg (P ${params.objectLengthCm} × L ${params.objectWidthCm} × T ${params.objectHeightCm} cm) | ${formatPlacementLabel(
+                params.originSurface,
+                params.originSurfaceCustom,
+                params.originHeightCm
+              )} → ${formatPlacementLabel(
+                params.destinationSurface,
+                params.destinationSurfaceCustom,
+                params.destinationHeightCm
+              )}`,
               { align: AlignmentType.LEFT, widthPct: 50 }
             ),
           ],

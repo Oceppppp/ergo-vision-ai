@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Download, FileText, Image as ImageIcon, Printer } from 'lucide-react';
+import { formatPlacementLabel } from '../data/placement';
 import { generateWorksheetDocx } from '../export/docxExporter';
 import type {
   CapturedMoment,
@@ -156,7 +157,11 @@ export const WorksheetReport: React.FC<WorksheetReportProps> = ({
           [
             {
               key: 'origin',
-              title: 'Posisi ORIGIN (Mulai Mengangkat)',
+              title: `ORIGIN — Dari: ${formatPlacementLabel(
+                params.originSurface,
+                params.originSurfaceCustom,
+                params.originHeightCm
+              )}`,
               badgeColor: 'bg-amber-100 text-amber-900',
               capture: originCapture,
               point: originPoint,
@@ -164,7 +169,11 @@ export const WorksheetReport: React.FC<WorksheetReportProps> = ({
             },
             {
               key: 'destination',
-              title: 'Posisi DESTINATION (Meletakkan Beban)',
+              title: `DESTINATION — Ke: ${formatPlacementLabel(
+                params.destinationSurface,
+                params.destinationSurfaceCustom,
+                params.destinationHeightCm
+              )}`,
               badgeColor: 'bg-emerald-100 text-emerald-900',
               capture: destinationCapture,
               point: destinationPoint,

@@ -457,10 +457,12 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       await new Promise((r) => setTimeout(r, 10));
     }
 
-    // Automatically jump to lowest V (Origin) and capture Origin + highest V (Destination) if samples found
+    // Automatically capture Origin & Destination respecting liftDirection (lifting: min->max, lowering: max->min)
     if (samples.length >= 2) {
-      const originSample = samples.reduce((min, cur) => (cur.V_cm < min.V_cm ? cur : min), samples[0]);
-      const destSample = samples.reduce((max, cur) => (cur.V_cm > max.V_cm ? cur : max), samples[0]);
+      const minVSample = samples.reduce((min, cur) => (cur.V_cm < min.V_cm ? cur : min), samples[0]);
+      const maxVSample = samples.reduce((max, cur) => (cur.V_cm > max.V_cm ? cur : max), samples[0]);
+      const originSample = params.liftDirection === 'lowering' ? maxVSample : minVSample;
+      const destSample = params.liftDirection === 'lowering' ? minVSample : maxVSample;
 
       const captureAtTime = async (timeSec: number, kind: 'origin' | 'destination') => {
         await new Promise<void>((resolve) => {

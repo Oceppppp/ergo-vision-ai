@@ -1,9 +1,12 @@
 import React, { useState } from 'react';
-import { AlertTriangle, CheckCircle2, Gauge, SlidersHorizontal } from 'lucide-react';
+import { AlertTriangle, ArrowDown, ArrowLeftRight, ArrowUp, CheckCircle2, Gauge, SlidersHorizontal } from 'lucide-react';
+import { PLACEMENT_PRESETS } from '../data/placement';
 import type {
   CameraViewMode,
   CouplingQuality,
+  LiftDirection,
   NioshFullResult,
+  PlacementSurfacePreset,
   StudentProfile,
   TaskParameters,
   WorkDurationCategory,
@@ -316,42 +319,187 @@ export const MetricsPanel: React.FC<MetricsPanelProps> = ({
             </div>
           </div>
 
-          <div className="grid grid-cols-4 gap-1.5">
+          <div className="grid grid-cols-3 gap-2">
             <div>
-              <label className="block text-[10px] font-semibold text-[#516275]">P (cm)</label>
+              <label className="block text-[10.5px] font-semibold text-[#516275]">Panjang (cm)</label>
               <input
                 type="number"
                 value={params.objectLengthCm}
                 onChange={(e) => update('objectLengthCm', Number(e.target.value) || 0)}
-                className="font-numeric mt-0.5 w-full rounded-md border border-[#CBD5E1] px-1.5 py-1"
+                className="font-numeric mt-0.5 w-full rounded-md border border-[#CBD5E1] px-2 py-1"
               />
             </div>
             <div>
-              <label className="block text-[10px] font-semibold text-[#516275]">L (cm)</label>
+              <label className="block text-[10.5px] font-semibold text-[#516275]">Lebar (cm)</label>
               <input
                 type="number"
                 value={params.objectWidthCm}
                 onChange={(e) => update('objectWidthCm', Number(e.target.value) || 0)}
-                className="font-numeric mt-0.5 w-full rounded-md border border-[#CBD5E1] px-1.5 py-1"
+                className="font-numeric mt-0.5 w-full rounded-md border border-[#CBD5E1] px-2 py-1"
               />
             </div>
             <div>
-              <label className="block text-[10px] font-semibold text-[#516275]">T (cm)</label>
+              <label className="block text-[10.5px] font-semibold text-[#516275]">Tinggi Benda (cm)</label>
               <input
                 type="number"
                 value={params.objectHeightCm}
                 onChange={(e) => update('objectHeightCm', Number(e.target.value) || 0)}
-                className="font-numeric mt-0.5 w-full rounded-md border border-[#CBD5E1] px-1.5 py-1"
+                className="font-numeric mt-0.5 w-full rounded-md border border-[#CBD5E1] px-2 py-1"
               />
             </div>
-            <div>
-              <label className="block text-[10px] font-semibold text-[#516275]">Rak (cm)</label>
-              <input
-                type="number"
-                value={params.shelfHeightCm}
-                onChange={(e) => update('shelfHeightCm', Number(e.target.value) || 0)}
-                className="font-numeric mt-0.5 w-full rounded-md border border-[#CBD5E1] px-1.5 py-1"
-              />
+          </div>
+
+          {/* Flexible Origin & Destination Placement (Optional Rack/Table/Floor) */}
+          <div className="rounded-lg border border-[#D8E0E8] bg-[#F8FAFC] p-2.5 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold text-[#142130]">Arah &amp; Tempat Pengangkatan (Opsional)</span>
+            </div>
+
+            <div className="grid grid-cols-3 gap-1">
+              {(
+                [
+                  { id: 'lifting', label: 'Lantai → Atas', icon: ArrowUp },
+                  { id: 'lowering', label: 'Atas → Lantai', icon: ArrowDown },
+                  { id: 'custom', label: 'Bebas', icon: ArrowLeftRight },
+                ] as const
+              ).map((dir) => {
+                const Icon = dir.icon;
+                const active = params.liftDirection === dir.id;
+                return (
+                  <button
+                    key={dir.id}
+                    type="button"
+                    onClick={() => {
+                      const next: TaskParameters = { ...params, liftDirection: dir.id as LiftDirection };
+                      if (dir.id === 'lifting') {
+                        next.originSurface = 'lantai';
+                        next.originHeightCm = 0;
+                        if (next.destinationSurface === 'lantai') {
+                          next.destinationSurface = 'rak';
+                          next.destinationHeightCm = 85;
+                        }
+                      } else if (dir.id === 'lowering') {
+                        if (next.originSurface === 'lantai') {
+                          next.originSurface = 'rak';
+                          next.originHeightCm = 85;
+                        }
+                        next.destinationSurface = 'lantai';
+                        next.destinationHeightCm = 0;
+                      }
+                      onParamsChange(next);
+                    }}
+                    className={`inline-flex items-center justify-center gap-1 rounded-md border px-1.5 py-1 text-[10.5px] font-bold cursor-pointer ${
+                      active
+                        ? 'border-[#0F5BD8] bg-[#0F5BD8] text-white'
+                        : 'border-[#CBD5E1] bg-white text-[#516275] hover:bg-slate-50'
+                    }`}
+                  >
+                    <Icon className="h-3 w-3 shrink-0" />
+                    <span className="truncate">{dir.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Origin Surface */}
+            <div className="grid grid-cols-12 gap-1.5 items-end">
+              <div className="col-span-8">
+                <label className="block text-[10.5px] font-semibold text-[#516275]">Tempat Asal (Origin)</label>
+                <select
+                  value={params.originSurface}
+                  onChange={(e) => {
+                    const preset = e.target.value as PlacementSurfacePreset;
+                    onParamsChange({
+                      ...params,
+                      originSurface: preset,
+                      originHeightCm: PLACEMENT_PRESETS[preset].defaultHeightCm,
+                    });
+                  }}
+                  className="mt-0.5 w-full rounded-md border border-[#CBD5E1] bg-white px-2 py-1 text-[11px]"
+                >
+                  {(Object.keys(PLACEMENT_PRESETS) as PlacementSurfacePreset[]).map((k) => (
+                    <option key={k} value={k}>
+                      {PLACEMENT_PRESETS[k].label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="col-span-4">
+                <label className="block text-[10px] font-semibold text-[#516275]">Tinggi (cm)</label>
+                <input
+                  type="number"
+                  min={0}
+                  placeholder="Opsional"
+                  value={params.originHeightCm ?? ''}
+                  onChange={(e) =>
+                    update('originHeightCm', e.target.value === '' ? null : Number.parseFloat(e.target.value) || 0)
+                  }
+                  className="font-numeric mt-0.5 w-full rounded-md border border-[#CBD5E1] bg-white px-2 py-1 text-[11px]"
+                />
+              </div>
+              {params.originSurface === 'lainnya' && (
+                <div className="col-span-12">
+                  <input
+                    type="text"
+                    placeholder="Tulis nama tempat asal (mis. Bak Pikap, Meja Dapur, Kasur...)"
+                    value={params.originSurfaceCustom ?? ''}
+                    onChange={(e) => update('originSurfaceCustom', e.target.value)}
+                    className="w-full rounded-md border border-[#CBD5E1] bg-white px-2 py-1 text-[11px]"
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* Destination Surface */}
+            <div className="grid grid-cols-12 gap-1.5 items-end">
+              <div className="col-span-8">
+                <label className="block text-[10.5px] font-semibold text-[#516275]">Tempat Tujuan (Destination)</label>
+                <select
+                  value={params.destinationSurface}
+                  onChange={(e) => {
+                    const preset = e.target.value as PlacementSurfacePreset;
+                    onParamsChange({
+                      ...params,
+                      destinationSurface: preset,
+                      destinationHeightCm: PLACEMENT_PRESETS[preset].defaultHeightCm,
+                    });
+                  }}
+                  className="mt-0.5 w-full rounded-md border border-[#CBD5E1] bg-white px-2 py-1 text-[11px]"
+                >
+                  {(Object.keys(PLACEMENT_PRESETS) as PlacementSurfacePreset[]).map((k) => (
+                    <option key={k} value={k}>
+                      {PLACEMENT_PRESETS[k].label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="col-span-4">
+                <label className="block text-[10px] font-semibold text-[#516275]">Tinggi (cm)</label>
+                <input
+                  type="number"
+                  min={0}
+                  placeholder="Opsional"
+                  value={params.destinationHeightCm ?? ''}
+                  onChange={(e) =>
+                    update(
+                      'destinationHeightCm',
+                      e.target.value === '' ? null : Number.parseFloat(e.target.value) || 0
+                    )
+                  }
+                  className="font-numeric mt-0.5 w-full rounded-md border border-[#CBD5E1] bg-white px-2 py-1 text-[11px]"
+                />
+              </div>
+              {params.destinationSurface === 'lainnya' && (
+                <div className="col-span-12">
+                  <input
+                    type="text"
+                    placeholder="Tulis nama tempat tujuan (mis. Atas Dispenser, Penampang Jemuran...)"
+                    value={params.destinationSurfaceCustom ?? ''}
+                    onChange={(e) => update('destinationSurfaceCustom', e.target.value)}
+                    className="w-full rounded-md border border-[#CBD5E1] bg-white px-2 py-1 text-[11px]"
+                  />
+                </div>
+              )}
             </div>
           </div>
 

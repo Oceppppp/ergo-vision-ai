@@ -131,6 +131,15 @@ export interface BodyAngles {
 export type CouplingQuality = 'good' | 'fair' | 'poor';
 export type RebaCouplingQuality = 'good' | 'fair' | 'poor' | 'unacceptable';
 export type WorkDurationCategory = 'short' | 'moderate' | 'long'; // <=1hr, <=2hr, <=8hr
+export type LiftDirection = 'lifting' | 'lowering' | 'custom';
+export type PlacementSurfacePreset =
+  | 'lantai'
+  | 'palet'
+  | 'rak'
+  | 'meja'
+  | 'troli'
+  | 'bagasi'
+  | 'lainnya';
 
 export interface TaskParameters {
   department: string;
@@ -142,7 +151,13 @@ export interface TaskParameters {
   objectLengthCm: number;
   objectWidthCm: number;
   objectHeightCm: number;
-  shelfHeightCm: number;
+  liftDirection: LiftDirection;
+  originSurface: PlacementSurfacePreset;
+  originSurfaceCustom?: string;
+  originHeightCm: number | null;
+  destinationSurface: PlacementSurfacePreset;
+  destinationSurfaceCustom?: string;
+  destinationHeightCm: number | null;
   frequencyPerMin: number;
   durationCategory: WorkDurationCategory;
   coupling: CouplingQuality;
