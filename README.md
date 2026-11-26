@@ -28,10 +28,19 @@ npm test
 npm run build
 ```
 
-## Push ke GitHub
+## Deploy ke Vercel
+
+Proyek ini sudah dikonfigurasi dengan `vercel.json` (Vite static SPA):
+
+1. Buka [vercel.com/new](https://vercel.com/new) dan login dengan akun GitHub Anda.
+2. Pilih repositori **`Oceppppp/ergo-vision-ai`** lalu klik **Import**.
+3. Biarkan pengaturan default (**Framework Preset: Vite**, **Build Command: `npm run build`**, **Output Directory: `dist`**) lalu klik **Deploy**.
+4. Karena seluruh AI Pose (`@mediapipe/tasks-vision`) dan export `.docx` berjalan di browser (*client-side*), tidak perlu *environment variable* maupun server backend tambahan.
+
+## Push Update ke GitHub
 
 ```bash
-git remote add origin https://github.com/<username-github-anda>/ergo-vision-ai.git
-git branch -M main
-git push -u origin main
+git add -A
+git commit -m "update"
+git push
 ```
