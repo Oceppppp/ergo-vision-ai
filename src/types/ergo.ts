@@ -262,6 +262,11 @@ export interface CapturedMoment {
   kind: 'origin' | 'destination';
   timestampSec: number;
   annotatedImageDataUrl: string;
+  rawFrameDataUrl?: string;
+  frameWidth?: number;
+  frameHeight?: number;
+  landmarks2D?: PoseLandmark2D[];
+  worldLandmarks?: PoseLandmark2D[];
   rawMeasurements: NioshPointMeasurement;
   overrideMeasurements?: Partial<NioshPointMeasurement>;
   angles: BodyAngles;

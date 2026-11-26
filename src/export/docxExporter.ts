@@ -44,6 +44,35 @@ function dataUrlToUint8Array(dataUrl: string): Uint8Array {
   return bytes;
 }
 
+/**
+ * Reads exact pixel width & height from PNG IHDR chunk (bytes 16..23) so Word images never stretch/squash.
+ */
+export function readPngDimensions(bytes: Uint8Array): { width: number; height: number } | null {
+  if (bytes.length < 24) return null;
+  // PNG signature: 89 50 4E 47 0D 0A 1A 0A
+  if (bytes[0] !== 0x89 || bytes[1] !== 0x50 || bytes[2] !== 0x4e || bytes[3] !== 0x47) {
+    return null;
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const width = view.getUint32(16, false);
+  const height = view.getUint32(20, false);
+  if (width === 0 || height === 0) return null;
+  return { width, height };
+}
+
+export function fitImagePreserveAspect(
+  natW: number,
+  natH: number,
+  maxW: number,
+  maxH: number
+): { width: number; height: number } {
+  const scale = Math.min(maxW / natW, maxH / natH);
+  return {
+    width: Math.max(1, Math.round(natW * scale)),
+    height: Math.max(1, Math.round(natH * scale)),
+  };
+}
+
 function cell(
   text: string,
   opts?: {
@@ -418,50 +447,111 @@ export async function generateWorksheetDocx(payload: DocxExportPayload): Promise
     );
   }
 
-  // Embedded Annotated Evidence Photos
+  // Embedded Annotated Evidence Photos (preserves exact portrait/landscape aspect ratio — never squashed!)
   if (originCapture?.annotatedImageDataUrl || destinationCapture?.annotatedImageDataUrl) {
     children.push(heading('BUKTI PENGUKURAN VISUAL BERANOTASI (GARIS UKUR V, H, A & SUDUT SENDI)', 11));
 
-    const embedPhoto = (title: string, cap: CapturedMoment) => {
+    const buildImageCell = (title: string, cap: CapturedMoment, maxW: number, maxH: number): TableCell | null => {
       try {
         const bytes = dataUrlToUint8Array(cap.annotatedImageDataUrl);
-        children.push(
-          new Paragraph({
-            spacing: { before: 100, after: 40 },
-            children: [
-              new TextRun({
-                text: `${title} — t=${cap.timestampSec.toFixed(2)}s | V=${fmtComma(
-                  cap.overrideMeasurements?.V ?? cap.rawMeasurements.V,
-                  1
-                )} cm, H=${fmtComma(cap.overrideMeasurements?.H ?? cap.rawMeasurements.H, 1)} cm, A=${fmtComma(
-                  cap.overrideMeasurements?.A ?? cap.rawMeasurements.A,
-                  1
-                )}° | REBA=${cap.reba.finalScore}, RULA=${cap.rula.finalScore}`,
-                bold: true,
-                font: 'Times New Roman',
-                size: 19,
-              }),
-            ],
-          }),
-          new Paragraph({
-            alignment: AlignmentType.CENTER,
-            spacing: { before: 40, after: 120 },
-            children: [
-              new ImageRun({
-                type: 'png',
-                data: bytes,
-                transformation: { width: 520, height: 293 },
-              }),
-            ],
-          })
-        );
+        const dims = readPngDimensions(bytes) ?? { width: cap.frameWidth ?? 760, height: cap.frameHeight ?? 1280 };
+        const fitted = fitImagePreserveAspect(dims.width, dims.height, maxW, maxH);
+        const side = cap.reba.side;
+        const ua = side === 'left' ? cap.angles.leftUpperArmFlexionDeg : cap.angles.rightUpperArmFlexionDeg;
+        const la = side === 'left' ? cap.angles.leftLowerArmFlexionDeg : cap.angles.rightLowerArmFlexionDeg;
+        const wr = side === 'left' ? cap.angles.leftWristFlexionDeg : cap.angles.rightWristFlexionDeg;
+
+        return new TableCell({
+          verticalAlign: VerticalAlign.TOP,
+          margins: { top: 80, bottom: 80, left: 80, right: 80 },
+          children: [
+            new Paragraph({
+              alignment: AlignmentType.CENTER,
+              spacing: { before: 0, after: 40 },
+              children: [new TextRun({ text: title, bold: true, font: 'Times New Roman', size: 20 })],
+            }),
+            new Paragraph({
+              alignment: AlignmentType.CENTER,
+              spacing: { before: 20, after: 60 },
+              children: [
+                new ImageRun({
+                  type: 'png',
+                  data: bytes,
+                  transformation: { width: fitted.width, height: fitted.height },
+                }),
+              ],
+            }),
+            new Paragraph({
+              alignment: AlignmentType.CENTER,
+              spacing: { before: 20, after: 20 },
+              children: [
+                new TextRun({
+                  text: `t=${cap.timestampSec.toFixed(2)}s | V=${fmtComma(
+                    cap.overrideMeasurements?.V ?? cap.rawMeasurements.V,
+                    1
+                  )} cm | H=${fmtComma(cap.overrideMeasurements?.H ?? cap.rawMeasurements.H, 1)} cm | A=${fmtComma(
+                    cap.overrideMeasurements?.A ?? cap.rawMeasurements.A,
+                    1
+                  )}°`,
+                  bold: true,
+                  font: 'Times New Roman',
+                  size: 18,
+                }),
+              ],
+            }),
+            new Paragraph({
+              alignment: AlignmentType.CENTER,
+              spacing: { before: 0, after: 0 },
+              children: [
+                new TextRun({
+                  text: `Trunk ${cap.angles.trunkFlexionDeg}° · Neck ${cap.angles.neckFlexionDeg}° · Knee ${cap.angles.maxKneeFlexionDeg}° · UA ${ua}° · LA ${la}° · Wrist ${wr}° | REBA=${cap.reba.finalScore} · RULA=${cap.rula.finalScore}`,
+                  font: 'Times New Roman',
+                  size: 17,
+                }),
+              ],
+            }),
+          ],
+        });
       } catch {
-        // Ignore invalid image encoding
+        return null;
       }
     };
 
-    if (originCapture?.annotatedImageDataUrl) embedPhoto('Foto 1: Posisi ORIGIN (Mulai Mengangkat)', originCapture);
-    if (destinationCapture?.annotatedImageDataUrl) embedPhoto('Foto 2: Posisi DESTINATION (Meletakkan Beban)', destinationCapture);
+    const origBytes = originCapture?.annotatedImageDataUrl ? dataUrlToUint8Array(originCapture.annotatedImageDataUrl) : null;
+    const origDims = origBytes ? readPngDimensions(origBytes) : null;
+    const isPortraitPair =
+      Boolean(originCapture?.annotatedImageDataUrl && destinationCapture?.annotatedImageDataUrl) &&
+      Boolean(origDims && origDims.height > origDims.width);
+
+    if (isPortraitPair && originCapture && destinationCapture) {
+      // Side-by-side 2-column layout for portrait phone photos (natural 9:16 aspect, zero distortion!)
+      const c1 = buildImageCell('Foto 1: Posisi ORIGIN', originCapture, 250, 445);
+      const c2 = buildImageCell('Foto 2: Posisi DESTINATION', destinationCapture, 250, 445);
+      if (c1 && c2) {
+        children.push(
+          new Table({
+            width: { size: 100, type: WidthType.PERCENTAGE },
+            rows: [new TableRow({ children: [c1, c2] })],
+          })
+        );
+      }
+    } else {
+      const embedSingle = (title: string, cap: CapturedMoment) => {
+        const c = buildImageCell(title, cap, 500, 420);
+        if (c) {
+          children.push(
+            new Table({
+              width: { size: 100, type: WidthType.PERCENTAGE },
+              rows: [new TableRow({ children: [c] })],
+            }),
+            new Paragraph({ spacing: { before: 40, after: 40 }, children: [] })
+          );
+        }
+      };
+      if (originCapture?.annotatedImageDataUrl) embedSingle('Foto 1: Posisi ORIGIN (Mulai Mengangkat)', originCapture);
+      if (destinationCapture?.annotatedImageDataUrl)
+        embedSingle('Foto 2: Posisi DESTINATION (Meletakkan Beban)', destinationCapture);
+    }
   }
 
   // Anthropometry reference table for the selected student

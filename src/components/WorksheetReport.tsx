@@ -10,7 +10,7 @@ import type {
   TaskParameters,
   TimelineSample,
 } from '../types/ergo';
-import { buildEvidenceCollageDataUrl } from '../vision/overlayRenderer';
+import { buildEvidenceCollageDataUrl, type EvidencePanelSpec } from '../vision/overlayRenderer';
 
 interface WorksheetReportProps {
   profile: StudentProfile;
@@ -79,18 +79,34 @@ export const WorksheetReport: React.FC<WorksheetReportProps> = ({
     if (!originCapture && !destinationCapture) return;
     setExportingPng(true);
     try {
-      const panels: Array<{ title: string; subtitle: string; imageDataUrl: string }> = [];
+      const panels: EvidencePanelSpec[] = [];
+      const formatDetails = (cap: CapturedMoment, pt: NioshPointMeasurement): string[] => {
+        const a = cap.angles;
+        const side = cap.reba.side;
+        const ua = side === 'left' ? a.leftUpperArmFlexionDeg : a.rightUpperArmFlexionDeg;
+        const la = side === 'left' ? a.leftLowerArmFlexionDeg : a.rightLowerArmFlexionDeg;
+        const wr = side === 'left' ? a.leftWristFlexionDeg : a.rightWristFlexionDeg;
+        return [
+          `NIOSH  : V = ${pt.V} cm  |  H = ${pt.H} cm  |  A = ${pt.A}°  |  L = ${params.loadWeightKg} kg`,
+          `SENDI  : Trunk ${a.trunkFlexionDeg}° · Neck ${a.neckFlexionDeg}° · Knee ${a.maxKneeFlexionDeg}°`,
+          `LENGAN : UpperArm ${ua}° · LowerArm ${la}° · Wrist ${wr}°`,
+          `SKOR   : REBA ${cap.reba.finalScore}/15 (L${cap.reba.actionLevel}) · RULA ${cap.rula.finalScore}/7 (L${cap.rula.actionLevel})`,
+        ];
+      };
+
       if (originCapture) {
         panels.push({
-          title: `ORIGIN (${profile.name} @ ${originCapture.timestampSec.toFixed(2)}s)`,
-          subtitle: `V=${originPoint.V}cm | H=${originPoint.H}cm | A=${originPoint.A}° | REBA=${originCapture.reba.finalScore} | RULA=${originCapture.rula.finalScore}`,
+          title: `ORIGIN — ${profile.name} (${originCapture.timestampSec.toFixed(2)}s)`,
+          subtitle: `Dari: ${formatPlacementLabel(params.originSurface, params.originSurfaceCustom, params.originHeightCm)}`,
+          detailLines: formatDetails(originCapture, originPoint),
           imageDataUrl: originCapture.annotatedImageDataUrl,
         });
       }
       if (destinationCapture) {
         panels.push({
-          title: `DESTINATION (${profile.name} @ ${destinationCapture.timestampSec.toFixed(2)}s)`,
-          subtitle: `V=${destinationPoint.V}cm | H=${destinationPoint.H}cm | A=${destinationPoint.A}° | REBA=${destinationCapture.reba.finalScore} | RULA=${destinationCapture.rula.finalScore}`,
+          title: `DESTINATION — ${profile.name} (${destinationCapture.timestampSec.toFixed(2)}s)`,
+          subtitle: `Ke: ${formatPlacementLabel(params.destinationSurface, params.destinationSurfaceCustom, params.destinationHeightCm)}`,
+          detailLines: formatDetails(destinationCapture, destinationPoint),
           imageDataUrl: destinationCapture.annotatedImageDataUrl,
         });
       }

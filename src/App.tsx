@@ -1,12 +1,17 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Ruler, User, Users } from 'lucide-react';
 import { MetricsPanel } from './components/MetricsPanel';
 import { StudentSelectorModal } from './components/StudentSelectorModal';
 import { TimelineChart } from './components/TimelineChart';
 import { type LiveFrameAnalysis, VideoCanvas } from './components/VideoCanvas';
 import { WorksheetReport } from './components/WorksheetReport';
-import { CLASS_ANTHROPOMETRY } from './data/anthropometry';
+import { CLASS_ANTHROPOMETRY, getErgonomicZones } from './data/anthropometry';
+import { calibrateFromAnthropometry } from './engine/calibration';
+import { computeNioshLiveGeometry, extractBodyAngles } from './engine/geometry';
 import { evaluateFullNiosh } from './engine/niosh';
+import { calculateReba } from './engine/reba';
+import { calculateRula } from './engine/rula';
+import { drawErgonomicOverlay } from './vision/overlayRenderer';
 import type {
   CameraViewMode,
   CapturedMoment,
@@ -80,6 +85,110 @@ export const App: React.FC = () => {
     setSelectedProfileId(p.id);
     setParams((prev) => ({ ...prev, analystName: p.name }));
   };
+
+  // Automatically re-calibrate & re-render captured Origin/Destination snapshots whenever
+  // the user switches student profile (e.g., Joseph -> Hillary) or updates task parameters!
+  useEffect(() => {
+    let cancelled = false;
+
+    const rerenderCapture = async (cap: CapturedMoment | null): Promise<CapturedMoment | null> => {
+      if (!cap || !cap.rawFrameDataUrl || !cap.landmarks2D || !cap.frameWidth || !cap.frameHeight) {
+        return null;
+      }
+      const w = cap.frameWidth;
+      const h = cap.frameHeight;
+      const zones = getErgonomicZones(selectedProfile);
+      const calibration = calibrateFromAnthropometry(cap.landmarks2D, w, h, selectedProfile, {
+        cameraViewMode,
+        manualReference: manualRef,
+      });
+      const angles = extractBodyAngles(cap.landmarks2D, w, h, cap.worldLandmarks);
+      const activeSide = sideSelection === 'auto' ? angles.dominantSide : sideSelection;
+      const reba = calculateReba(angles, params, activeSide);
+      const rula = calculateRula(angles, params, activeSide);
+      const nioshGeom = computeNioshLiveGeometry(
+        cap.landmarks2D,
+        w,
+        h,
+        calibration,
+        angles,
+        zones,
+        undefined,
+        cap.worldLandmarks
+      );
+
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const el = new Image();
+        el.onload = () => resolve(el);
+        el.onerror = reject;
+        el.src = cap.rawFrameDataUrl!;
+      });
+
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d')!;
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(img, 0, 0, w, h);
+
+      drawErgonomicOverlay(ctx, {
+        mode: 'combined',
+        showZones: false,
+        showHudBadge: true,
+        profile: selectedProfile,
+        landmarks2D: cap.landmarks2D,
+        angles,
+        calibration,
+        nioshGeom,
+        zones,
+        reba,
+        rula,
+        manualRef,
+        interactivePins: false,
+        timestampLabel: `t=${cap.timestampSec.toFixed(2)}s`,
+      });
+
+      return {
+        ...cap,
+        annotatedImageDataUrl: canvas.toDataURL('image/png'),
+        rawMeasurements: { H: nioshGeom.H_cm, V: nioshGeom.V_cm, A: nioshGeom.A_deg },
+        overrideMeasurements: undefined,
+        angles,
+        reba,
+        rula,
+        calibrationConfidence: calibration.confidence,
+        calibrationNote:
+          calibration.methodUsed === 'manual_reference'
+            ? `Kalibrasi Manual (${manualRef?.knownCm ?? 0} cm)`
+            : `Kalibrasi Antropometri ${selectedProfile.name} (${calibration.segmentsUsed.map((s) => s.segmentKey).join(', ')})`,
+      };
+    };
+
+    const syncAll = async () => {
+      if (originCapture?.rawFrameDataUrl) {
+        const updatedOrigin = await rerenderCapture(originCapture);
+        if (!cancelled && updatedOrigin) {
+          setOriginCapture(updatedOrigin);
+          setOriginManual({ ...updatedOrigin.rawMeasurements });
+        }
+      }
+      if (destinationCapture?.rawFrameDataUrl) {
+        const updatedDest = await rerenderCapture(destinationCapture);
+        if (!cancelled && updatedDest) {
+          setDestinationCapture(updatedDest);
+          setDestinationManual({ ...updatedDest.rawMeasurements });
+        }
+      }
+    };
+
+    void syncAll();
+    return () => {
+      cancelled = true;
+    };
+    // Re-sync captures only when profile/calibration/params change (intentionally omit capture state to avoid loops)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedProfile, cameraViewMode, sideSelection, manualRef, params.loadWeightKg, params.coupling]);
 
   const handleCaptureMoment = (moment: CapturedMoment) => {
     if (moment.kind === 'origin') {

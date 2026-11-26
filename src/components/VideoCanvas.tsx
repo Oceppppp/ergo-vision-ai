@@ -33,7 +33,7 @@ import type {
   TaskParameters,
   TimelineSample,
 } from '../types/ergo';
-import { drawErgonomicOverlay, type OverlayMode } from '../vision/overlayRenderer';
+import { computeCrispCanvasSize, drawErgonomicOverlay, type OverlayMode } from '../vision/overlayRenderer';
 import { ErgoPoseDetector } from '../vision/poseDetector';
 
 export interface LiveFrameAnalysis {
@@ -92,7 +92,7 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
   const [playbackRate, setPlaybackRate] = useState(1);
 
   const [overlayMode, setOverlayMode] = useState<OverlayMode>('combined');
-  const [showZones, setShowZones] = useState(true);
+  const [showZones, setShowZones] = useState(false);
   const [isCalibratingRef, setIsCalibratingRef] = useState(false);
   const [pendingRefPt, setPendingRefPt] = useState<Point2D | null>(null);
   const [refKnownCm, setRefKnownCm] = useState<number>(85);
@@ -136,13 +136,16 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       const canvas = canvasRef.current;
       if (!canvas || video.videoWidth === 0 || video.videoHeight === 0) return null;
 
-      if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
+      const crispSize = computeCrispCanvasSize(video.videoWidth, video.videoHeight);
+      if (canvas.width !== crispSize.width || canvas.height !== crispSize.height) {
+        canvas.width = crispSize.width;
+        canvas.height = crispSize.height;
       }
 
       const ctx = canvas.getContext('2d');
       if (!ctx) return null;
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
       if (!pose) {
@@ -167,7 +170,8 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
         calibration,
         angles,
         zones,
-        overridePins
+        overridePins,
+        pose.worldLandmarks
       );
 
       drawErgonomicOverlay(ctx, {
@@ -384,12 +388,52 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     setCurrentTime(next);
   };
 
-  const handleCapture = (kind: 'origin' | 'destination') => {
-    const canvas = canvasRef.current;
-    const analysis = latestAnalysisRef.current;
-    if (!canvas || !analysis) return;
+  const buildCleanSnapshotPair = useCallback(
+    (
+      video: HTMLVideoElement,
+      analysis: LiveFrameAnalysis,
+      pose: { landmarks2D: PoseLandmark2D[]; worldLandmarks?: PoseLandmark2D[] } | null
+    ): { rawFrameDataUrl: string; annotatedImageDataUrl: string; width: number; height: number } => {
+      const crispSize = computeCrispCanvasSize(video.videoWidth, video.videoHeight);
+      const off = document.createElement('canvas');
+      off.width = crispSize.width;
+      off.height = crispSize.height;
+      const octx = off.getContext('2d')!;
+      octx.imageSmoothingEnabled = true;
+      octx.imageSmoothingQuality = 'high';
+      octx.drawImage(video, 0, 0, off.width, off.height);
+      const rawFrameDataUrl = off.toDataURL('image/png');
 
-    const dataUrl = canvas.toDataURL('image/png');
+      if (pose) {
+        drawErgonomicOverlay(octx, {
+          mode: overlayMode,
+          showZones,
+          showHudBadge: true,
+          profile,
+          landmarks2D: pose.landmarks2D,
+          angles: analysis.angles,
+          calibration: analysis.calibration,
+          nioshGeom: analysis.nioshGeom,
+          zones: getErgonomicZones(profile),
+          reba: analysis.reba,
+          rula: analysis.rula,
+          manualRef,
+          interactivePins: false,
+          timestampLabel: sourceMode === 'upload' ? `t=${analysis.timestampSec.toFixed(2)}s` : 'LIVE',
+        });
+      }
+      const annotatedImageDataUrl = off.toDataURL('image/png');
+      return { rawFrameDataUrl, annotatedImageDataUrl, width: off.width, height: off.height };
+    },
+    [overlayMode, showZones, profile, manualRef, sourceMode]
+  );
+
+  const handleCapture = (kind: 'origin' | 'destination') => {
+    const video = videoRef.current;
+    const analysis = latestAnalysisRef.current;
+    if (!video || !analysis) return;
+
+    const snap = buildCleanSnapshotPair(video, analysis, lastPoseRef.current);
     const calNote =
       analysis.calibration.methodUsed === 'manual_reference'
         ? `Kalibrasi Manual (${manualRef?.knownCm ?? 0} cm)`
@@ -398,7 +442,12 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     onCaptureMoment({
       kind,
       timestampSec: analysis.timestampSec,
-      annotatedImageDataUrl: dataUrl,
+      annotatedImageDataUrl: snap.annotatedImageDataUrl,
+      rawFrameDataUrl: snap.rawFrameDataUrl,
+      frameWidth: snap.width,
+      frameHeight: snap.height,
+      landmarks2D: lastPoseRef.current?.landmarks2D,
+      worldLandmarks: lastPoseRef.current?.worldLandmarks,
       rawMeasurements: {
         H: analysis.nioshGeom.H_cm,
         V: analysis.nioshGeom.V_cm,
@@ -471,12 +520,17 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
         });
         const pose = detector.detectFrame(video, { smooth: false });
         const frame = renderAnalysisToCanvas(video, pose, {});
-        const canvas = canvasRef.current;
-        if (frame && canvas) {
+        if (frame) {
+          const snap = buildCleanSnapshotPair(video, frame, pose);
           onCaptureMoment({
             kind,
             timestampSec: frame.timestampSec,
-            annotatedImageDataUrl: canvas.toDataURL('image/png'),
+            annotatedImageDataUrl: snap.annotatedImageDataUrl,
+            rawFrameDataUrl: snap.rawFrameDataUrl,
+            frameWidth: snap.width,
+            frameHeight: snap.height,
+            landmarks2D: pose?.landmarks2D,
+            worldLandmarks: pose?.worldLandmarks,
             rawMeasurements: {
               H: frame.nioshGeom.H_cm,
               V: frame.nioshGeom.V_cm,

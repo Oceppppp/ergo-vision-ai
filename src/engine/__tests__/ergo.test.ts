@@ -11,7 +11,8 @@ import { computeNioshLiveGeometry, extractBodyAngles, LM } from '../geometry';
 import { evaluateFullNiosh } from '../niosh';
 import { calculateReba } from '../reba';
 import { calculateRula } from '../rula';
-import { generateWorksheetDocx } from '../../export/docxExporter';
+import { fitImagePreserveAspect, generateWorksheetDocx, readPngDimensions } from '../../export/docxExporter';
+import { computeCrispCanvasSize } from '../../vision/overlayRenderer';
 import type { BodyAngles, PoseLandmark2D, TaskParameters } from '../../types/ergo';
 
 function createSyntheticPose(overrides: Partial<Record<number, Partial<PoseLandmark2D>>> = {}): PoseLandmark2D[] {
@@ -339,5 +340,31 @@ describe('Anthropometric Calibration & Geometry', () => {
     // DOCX files are ZIP archives starting with ASCII "PK" (0x50, 0x4B)
     expect(buf[0]).toBe(0x50);
     expect(buf[1]).toBe(0x4b);
+  });
+
+  it('upscales low-res vertical phone video to crisp HD canvas and preserves exact PNG aspect ratio in DOCX', () => {
+    const crispPortrait = computeCrispCanvasSize(360, 640);
+    expect(crispPortrait.width).toBe(760);
+    expect(crispPortrait.height).toBe(1351);
+    expect(crispPortrait.width / crispPortrait.height).toBeCloseTo(360 / 640, 2);
+
+    // Fake minimal PNG header with width=760, height=1351
+    const pngHeader = new Uint8Array(24);
+    pngHeader.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+    const dv = new DataView(pngHeader.buffer);
+    dv.setUint32(16, 760, false);
+    dv.setUint32(20, 1351, false);
+    const parsed = readPngDimensions(pngHeader);
+    expect(parsed).toEqual({ width: 760, height: 1351 });
+
+    // Portrait fit must preserve 9:16 ratio (never squashed into 520x293!)
+    const fittedPortrait = fitImagePreserveAspect(760, 1351, 250, 445);
+    expect(fittedPortrait.height).toBeGreaterThan(fittedPortrait.width);
+    expect(fittedPortrait.width / fittedPortrait.height).toBeCloseTo(760 / 1351, 2);
+
+    // Landscape fit must preserve 16:9 ratio
+    const fittedLandscape = fitImagePreserveAspect(1280, 720, 500, 420);
+    expect(fittedLandscape.width).toBe(500);
+    expect(fittedLandscape.height).toBe(281);
   });
 });
