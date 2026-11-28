@@ -14,7 +14,7 @@ import {
   Upload,
 } from 'lucide-react';
 import { getErgonomicZones } from '../data/anthropometry';
-import { calibrateFromAnthropometry } from '../engine/calibration';
+import { calibrateFromAnthropometry, tryBuildStandingAnchor } from '../engine/calibration';
 import { computeNioshLiveGeometry, dist2D, extractBodyAngles } from '../engine/geometry';
 import { calculateReba } from '../engine/reba';
 import { calculateRula } from '../engine/rula';
@@ -29,6 +29,7 @@ import type {
   PoseLandmark2D,
   RebaResult,
   RulaResult,
+  StandingAnchor,
   StudentProfile,
   TaskParameters,
   TimelineSample,
@@ -102,9 +103,17 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
 
   const [isAutoScanning, setIsAutoScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState(0);
+  const [standingAnchor, setStandingAnchor] = useState<StandingAnchor | null>(null);
 
   const latestAnalysisRef = useRef<LiveFrameAnalysis | null>(null);
   const lastPoseRef = useRef<{ landmarks2D: PoseLandmark2D[]; worldLandmarks?: PoseLandmark2D[] } | null>(null);
+  const standingAnchorRef = useRef<StandingAnchor | null>(null);
+
+  // Reset standing anchor when switching student profile so scale re-locks to the new person's exact B3/B10/D7
+  useEffect(() => {
+    standingAnchorRef.current = null;
+    setStandingAnchor(null);
+  }, [profile.id]);
 
   // Initialize MediaPipe PoseLandmarker on mount
   useEffect(() => {
@@ -131,7 +140,8 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     (
       video: HTMLVideoElement,
       pose: { landmarks2D: PoseLandmark2D[]; worldLandmarks?: PoseLandmark2D[] } | null,
-      overridePins = customPins
+      overridePins = customPins,
+      forcedAnchor?: StandingAnchor | null
     ): LiveFrameAnalysis | null => {
       const canvas = canvasRef.current;
       if (!canvas || video.videoWidth === 0 || video.videoHeight === 0) return null;
@@ -155,11 +165,34 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       }
 
       const zones = getErgonomicZones(profile);
+      const angles = extractBodyAngles(pose.landmarks2D, canvas.width, canvas.height, pose.worldLandmarks);
+
+      // Opportunistically lock a gold-standard standing baseline anchor whenever subject stands upright
+      let activeAnchor = forcedAnchor !== undefined ? forcedAnchor : standingAnchorRef.current;
+      if (!manualRef && forcedAnchor === undefined) {
+        const candidate = tryBuildStandingAnchor(
+          pose.landmarks2D,
+          canvas.width,
+          canvas.height,
+          profile,
+          video.currentTime,
+          pose.worldLandmarks,
+          angles.trunkFlexionDeg,
+          angles.maxKneeFlexionDeg
+        );
+        if (candidate && (!activeAnchor || candidate.confidence > activeAnchor.confidence + 0.03)) {
+          activeAnchor = candidate;
+          standingAnchorRef.current = candidate;
+          setStandingAnchor(candidate);
+        }
+      }
+
       const calibration = calibrateFromAnthropometry(pose.landmarks2D, canvas.width, canvas.height, profile, {
         cameraViewMode,
         manualReference: manualRef,
+        worldLandmarks: pose.worldLandmarks,
+        standingAnchor: activeAnchor,
       });
-      const angles = extractBodyAngles(pose.landmarks2D, canvas.width, canvas.height, pose.worldLandmarks);
       const activeSide = sideSelection === 'auto' ? angles.dominantSide : sideSelection;
       const reba = calculateReba(angles, params, activeSide);
       const rula = calculateRula(angles, params, activeSide);
@@ -317,6 +350,8 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     setVideoFileName(file.name);
     setSourceMode('upload');
     setCustomPins({});
+    standingAnchorRef.current = null;
+    setStandingAnchor(null);
     onManualRefChange(null);
     detectorRef.current?.resetSmoothing();
 
@@ -461,7 +496,7 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     });
   };
 
-  // Full video Auto-Scan across all motion frames
+  // Full video 2-Pass Auto-Scan: Pass 1 locks gold-standard upright standing anchor; Pass 2 computes uniform high-accuracy timeline & chronological Origin -> Destination
   const runAutoScan = async () => {
     const video = videoRef.current;
     const detector = detectorRef.current;
@@ -474,9 +509,17 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     setCustomPins({});
     detector.resetSmoothing();
 
-    const stepSec = duration > 25 ? 0.5 : duration > 10 ? 0.3 : 0.2;
-    const samples: TimelineSample[] = [];
+    const stepSec = duration > 25 ? 0.45 : duration > 10 ? 0.25 : 0.2;
+    const crispSize = computeCrispCanvasSize(video.videoWidth, video.videoHeight);
     const zones = getErgonomicZones(profile);
+
+    // Pass 1: Scan all frames and discover the highest-confidence upright standing baseline
+    const rawFrames: Array<{
+      timeSec: number;
+      landmarks2D: PoseLandmark2D[];
+      worldLandmarks?: PoseLandmark2D[];
+    }> = [];
+    let bestAnchor: StandingAnchor | null = standingAnchorRef.current;
 
     for (let t = 0; t <= duration; t += stepSec) {
       const targetT = Math.min(duration - 0.02, t);
@@ -487,31 +530,123 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       });
 
       const pose = detector.detectFrame(video, { smooth: false });
-      const frame = renderAnalysisToCanvas(video, pose, {});
-      if (frame) {
-        samples.push({
+      if (pose) {
+        rawFrames.push({
           timeSec: Number(targetT.toFixed(2)),
-          rebaScore: frame.reba.finalScore,
-          rulaScore: frame.rula.finalScore,
-          V_cm: frame.nioshGeom.V_cm,
-          H_cm: frame.nioshGeom.H_cm,
-          A_deg: frame.nioshGeom.A_deg,
-          trunkFlexionDeg: frame.angles.trunkFlexionDeg,
-          feetVisible: frame.angles.feetVisible,
+          landmarks2D: pose.landmarks2D,
+          worldLandmarks: pose.worldLandmarks,
         });
+        const angles = extractBodyAngles(pose.landmarks2D, crispSize.width, crispSize.height, pose.worldLandmarks);
+        const anchorCand = tryBuildStandingAnchor(
+          pose.landmarks2D,
+          crispSize.width,
+          crispSize.height,
+          profile,
+          targetT,
+          pose.worldLandmarks,
+          angles.trunkFlexionDeg,
+          angles.maxKneeFlexionDeg
+        );
+        if (anchorCand && (!bestAnchor || anchorCand.confidence > bestAnchor.confidence)) {
+          bestAnchor = anchorCand;
+        }
+        renderAnalysisToCanvas(video, pose, {}, bestAnchor);
       }
       setCurrentTime(targetT);
-      setScanProgress(Math.min(100, Math.round((t / duration) * 100)));
-      // Yield briefly to keep UI responsive
-      await new Promise((r) => setTimeout(r, 10));
+      setScanProgress(Math.min(95, Math.round((t / duration) * 95)));
+      await new Promise((r) => setTimeout(r, 8));
     }
 
-    // Automatically capture Origin & Destination respecting liftDirection (lifting: min->max, lowering: max->min)
+    if (bestAnchor) {
+      standingAnchorRef.current = bestAnchor;
+      setStandingAnchor(bestAnchor);
+    }
+
+    // Pass 2: Recompute every frame with the uniform locked standing baseline (zero foreshortening drift!)
+    const samples: TimelineSample[] = rawFrames.map((rf) => {
+      const angles = extractBodyAngles(rf.landmarks2D, crispSize.width, crispSize.height, rf.worldLandmarks);
+      const calibration = calibrateFromAnthropometry(rf.landmarks2D, crispSize.width, crispSize.height, profile, {
+        cameraViewMode,
+        manualReference: manualRef,
+        worldLandmarks: rf.worldLandmarks,
+        standingAnchor: bestAnchor,
+      });
+      const activeSide = sideSelection === 'auto' ? angles.dominantSide : sideSelection;
+      const reba = calculateReba(angles, params, activeSide);
+      const rula = calculateRula(angles, params, activeSide);
+      const nioshGeom = computeNioshLiveGeometry(
+        rf.landmarks2D,
+        crispSize.width,
+        crispSize.height,
+        calibration,
+        angles,
+        zones,
+        {},
+        rf.worldLandmarks
+      );
+      return {
+        timeSec: rf.timeSec,
+        rebaScore: reba.finalScore,
+        rulaScore: rula.finalScore,
+        V_cm: nioshGeom.V_cm,
+        H_cm: nioshGeom.H_cm,
+        A_deg: nioshGeom.A_deg,
+        trunkFlexionDeg: angles.trunkFlexionDeg,
+        feetVisible: angles.feetVisible,
+      };
+    });
+
+    // Smart Chronological Origin -> Destination selection
     if (samples.length >= 2) {
-      const minVSample = samples.reduce((min, cur) => (cur.V_cm < min.V_cm ? cur : min), samples[0]);
-      const maxVSample = samples.reduce((max, cur) => (cur.V_cm > max.V_cm ? cur : max), samples[0]);
-      const originSample = params.liftDirection === 'lowering' ? maxVSample : minVSample;
-      const destSample = params.liftDirection === 'lowering' ? minVSample : maxVSample;
+      let originSample: TimelineSample;
+      let destSample: TimelineSample;
+
+      if (params.liftDirection === 'lowering') {
+        // Lowering: Origin is high V earlier in video, Destination is lowest V after Origin
+        const earlyPool = samples.slice(0, Math.max(1, Math.floor(samples.length * 0.8)));
+        originSample = earlyPool.reduce((max, cur) => (cur.V_cm > max.V_cm ? cur : max), earlyPool[0]);
+        const afterOrigin = samples.filter((s) => s.timeSec > originSample.timeSec + 0.35);
+        const destPool = afterOrigin.length > 0 ? afterOrigin : samples;
+        destSample = destPool.reduce((min, cur) => (cur.V_cm < min.V_cm ? cur : min), destPool[0]);
+      } else {
+        // Lifting / Custom:
+        // 1) Origin: find the settled low-V frame (middle of floor-hold plateau when hands rest on the load)
+        const minV = Math.min(...samples.map((s) => s.V_cm));
+        const lowHold = samples.filter((s) => s.V_cm <= minV + 6);
+        originSample = lowHold[Math.floor(lowHold.length / 2)] ?? samples[0];
+
+        // 2) Destination: after Origin, find the settled placement plateau (after lifting over table/shelf edge)
+        const afterOrigin = samples.filter((s) => s.timeSec > originSample.timeSec + 0.4);
+        if (afterOrigin.length >= 3) {
+          const maxPostV = Math.max(...afterOrigin.map((s) => s.V_cm));
+          const peakIdx = afterOrigin.findIndex((s) => s.V_cm === maxPostV);
+          const minElevatedV = originSample.V_cm + (maxPostV - originSample.V_cm) * 0.6;
+
+          // Look after the lift peak for a settled placement frame (low vertical velocity |dV| < 4 cm while still elevated)
+          const postPeak = afterOrigin.slice(peakIdx);
+          const settledCandidates: TimelineSample[] = [];
+          for (let i = 1; i < postPeak.length - 1; i++) {
+            const prevV = postPeak[i - 1].V_cm;
+            const cur = postPeak[i];
+            const nextV = postPeak[i + 1].V_cm;
+            if (cur.V_cm >= minElevatedV && Math.abs(cur.V_cm - prevV) < 4.5 && Math.abs(nextV - cur.V_cm) < 4.5) {
+              settledCandidates.push(cur);
+            }
+          }
+
+          if (settledCandidates.length > 0) {
+            // Pick the settled placement frame with the clearest reach onto the destination surface
+            destSample = settledCandidates.reduce((best, cur) => (cur.H_cm > best.H_cm ? cur : best), settledCandidates[0]);
+          } else {
+            const nearTop = afterOrigin.filter((s) => s.V_cm >= maxPostV - 14);
+            destSample = nearTop.reduce((best, cur) => (cur.H_cm > best.H_cm ? cur : best), nearTop[0]);
+          }
+        } else if (afterOrigin.length > 0) {
+          destSample = afterOrigin.reduce((max, cur) => (cur.V_cm > max.V_cm ? cur : max), afterOrigin[0]);
+        } else {
+          destSample = samples.reduce((max, cur) => (cur.V_cm > max.V_cm ? cur : max), samples[0]);
+        }
+      }
 
       const captureAtTime = async (timeSec: number, kind: 'origin' | 'destination') => {
         await new Promise<void>((resolve) => {
@@ -519,7 +654,7 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
           video.currentTime = timeSec;
         });
         const pose = detector.detectFrame(video, { smooth: false });
-        const frame = renderAnalysisToCanvas(video, pose, {});
+        const frame = renderAnalysisToCanvas(video, pose, {}, bestAnchor);
         if (frame) {
           const snap = buildCleanSnapshotPair(video, frame, pose);
           onCaptureMoment({
@@ -540,7 +675,9 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
             reba: frame.reba,
             rula: frame.rula,
             calibrationConfidence: frame.calibration.confidence,
-            calibrationNote: `Auto-Scan Antropometri ${profile.name} (zona B14–B13: ${zones.knuckleCm}–${zones.elbowCm} cm)`,
+            calibrationNote: bestAnchor
+              ? `Auto-Scan Kalibrasi Berdiri Terkunci (${profile.name}: ${bestAnchor.segmentsUsed.map((s) => s.segmentKey).join(', ')})`
+              : `Auto-Scan Antropometri ${profile.name} (zona B14–B13: ${zones.knuckleCm}–${zones.elbowCm} cm)`,
           });
         }
       };
@@ -917,9 +1054,26 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
           </div>
 
           {videoFileName && (
-            <div className="flex items-center justify-between text-[11px] text-[#516275]">
-              <span>File aktif: <strong>{videoFileName}</strong></span>
-              <span>Saat pause, pin <strong>Hand Grip</strong> & <strong>Mid-Ankle</strong> dapat digeser langsung di video untuk koreksi presisi.</span>
+            <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#516275]">
+              <div className="flex items-center gap-2">
+                <span>File aktif: <strong>{videoFileName}</strong></span>
+                {standingAnchor && !manualRef && (
+                  <span className="inline-flex items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 text-[10.5px] font-semibold text-emerald-700 border border-emerald-200">
+                    Kalibrasi Berdiri Terkunci ({standingAnchor.segmentsUsed.map((s) => s.segmentKey).join('+')})
+                    <button
+                      type="button"
+                      onClick={() => {
+                        standingAnchorRef.current = null;
+                        setStandingAnchor(null);
+                      }}
+                      className="ml-1 underline hover:text-emerald-900 cursor-pointer"
+                    >
+                      Reset
+                    </button>
+                  </span>
+                )}
+              </div>
+              <span>Saat pause, pin <strong>Hand Grip</strong> &amp; <strong>Mid-Ankle</strong> dapat digeser langsung di video untuk koreksi presisi.</span>
             </div>
           )}
         </div>

@@ -31,21 +31,23 @@ function createSyntheticPose(overrides: Partial<Record<number, Partial<PoseLandm
   const cmToX = (dxCm: number) => (400 + dxCm * 4) / 1000;
 
   base[LM.NOSE] = { x: cmToX(8), y: cmToY(160), z: 0, visibility: 0.95 };
+  base[LM.LEFT_EYE] = { x: cmToX(5), y: cmToY(157), z: -0.04, visibility: 0.95 };
+  base[LM.RIGHT_EYE] = { x: cmToX(5), y: cmToY(157), z: 0.04, visibility: 0.95 };
   base[LM.LEFT_EAR] = { x: cmToX(0), y: cmToY(161), z: -0.05, visibility: 0.9 };
   base[LM.RIGHT_EAR] = { x: cmToX(0), y: cmToY(161), z: 0.05, visibility: 0.95 };
-  base[LM.LEFT_SHOULDER] = { x: cmToX(0), y: cmToY(140.8), z: -0.1, visibility: 0.9 };
-  base[LM.RIGHT_SHOULDER] = { x: cmToX(0), y: cmToY(140.8), z: 0.1, visibility: 0.98 };
-  base[LM.LEFT_ELBOW] = { x: cmToX(2), y: cmToY(108.6), z: -0.1, visibility: 0.9 };
-  base[LM.RIGHT_ELBOW] = { x: cmToX(2), y: cmToY(108.6), z: 0.1, visibility: 0.98 };
-  // Forearm extended forward 28.2 cm horizontally -> elbow flexed ~90 deg, hand at V = 108.6 cm, H = 30.2 cm
-  base[LM.LEFT_WRIST] = { x: cmToX(30.2), y: cmToY(108.6), z: -0.1, visibility: 0.9 };
-  base[LM.RIGHT_WRIST] = { x: cmToX(30.2), y: cmToY(108.6), z: 0.1, visibility: 0.98 };
-  base[LM.LEFT_INDEX] = { x: cmToX(35), y: cmToY(108.6), z: -0.1, visibility: 0.9 };
-  base[LM.RIGHT_INDEX] = { x: cmToX(35), y: cmToY(108.6), z: 0.1, visibility: 0.98 };
+  base[LM.LEFT_SHOULDER] = { x: cmToX(0), y: cmToY(138.3), z: -0.1, visibility: 0.9 };
+  base[LM.RIGHT_SHOULDER] = { x: cmToX(0), y: cmToY(138.3), z: 0.1, visibility: 0.98 };
+  base[LM.LEFT_ELBOW] = { x: cmToX(2), y: cmToY(106.1), z: -0.1, visibility: 0.9 };
+  base[LM.RIGHT_ELBOW] = { x: cmToX(2), y: cmToY(106.1), z: 0.1, visibility: 0.98 };
+  // Forearm extended forward 28.2 cm horizontally -> elbow flexed ~90 deg, hand at V = 106.1 cm, H = 30.2 cm
+  base[LM.LEFT_WRIST] = { x: cmToX(30.2), y: cmToY(106.1), z: -0.1, visibility: 0.9 };
+  base[LM.RIGHT_WRIST] = { x: cmToX(30.2), y: cmToY(106.1), z: 0.1, visibility: 0.98 };
+  base[LM.LEFT_INDEX] = { x: cmToX(35), y: cmToY(106.1), z: -0.1, visibility: 0.9 };
+  base[LM.RIGHT_INDEX] = { x: cmToX(35), y: cmToY(106.1), z: 0.1, visibility: 0.98 };
   base[LM.LEFT_HIP] = { x: cmToX(0), y: cmToY(92), z: -0.1, visibility: 0.9 };
   base[LM.RIGHT_HIP] = { x: cmToX(0), y: cmToY(92), z: 0.1, visibility: 0.98 };
-  base[LM.LEFT_KNEE] = { x: cmToX(0), y: cmToY(52.7), z: -0.1, visibility: 0.9 };
-  base[LM.RIGHT_KNEE] = { x: cmToX(0), y: cmToY(52.7), z: 0.1, visibility: 0.98 };
+  base[LM.LEFT_KNEE] = { x: cmToX(0), y: cmToY(50.2), z: -0.1, visibility: 0.9 };
+  base[LM.RIGHT_KNEE] = { x: cmToX(0), y: cmToY(50.2), z: 0.1, visibility: 0.98 };
   base[LM.LEFT_ANKLE] = { x: cmToX(0), y: cmToY(6.9), z: -0.1, visibility: 0.95 };
   base[LM.RIGHT_ANKLE] = { x: cmToX(0), y: cmToY(6.9), z: 0.1, visibility: 0.98 };
   base[LM.LEFT_HEEL] = { x: cmToX(-4), y: cmToY(0), z: -0.1, visibility: 0.95 };
@@ -206,6 +208,8 @@ describe('REBA & RULA Engines', () => {
     rightLowerArmFlexionDeg: 80,
     leftWristFlexionDeg: 3,
     rightWristFlexionDeg: 3,
+    leftArmCrossesMidline: false,
+    rightArmCrossesMidline: false,
     asymmetryAngleDeg: 0,
     feetVisible: true,
     kneelingSuspected: false,
@@ -258,6 +262,12 @@ describe('REBA & RULA Engines', () => {
     const high = calculateRula(highRiskAngles, baseParams);
     expect(high.finalScore).toBe(7);
     expect(high.actionLevel).toBe(4);
+
+    // Textbook RULA Force/Load check: >10 kg intermittent is +2, >10 kg static/repeated is +3
+    const heavyIntermittent = calculateRula(neutralAngles, { ...baseParams, loadWeightKg: 15, frequencyPerMin: 1 });
+    expect(heavyIntermittent.armForceScore).toBe(2);
+    const heavyRepeated = calculateRula(neutralAngles, { ...baseParams, loadWeightKg: 15, frequencyPerMin: 5 });
+    expect(heavyRepeated.armForceScore).toBe(3);
   });
 });
 
@@ -281,9 +291,70 @@ describe('Anthropometric Calibration & Geometry', () => {
 
     const zones = getErgonomicZones(joseph);
     const geom = computeNioshLiveGeometry(pose, 1000, 1000, cal, angles, zones);
-    expect(geom.V_cm).toBeCloseTo(108.6, 0);
+    expect(geom.V_cm).toBeCloseTo(106.1, 0);
     expect(geom.H_cm).toBeCloseTo(32.6, 0);
     expect(geom.heightZone).toBe('Knuckle–Elbow (Preferred)');
+  });
+
+  it('computes accurate 3D H, V, and ~85° asymmetry angle A when twisted right toward an 85 cm table (Joseph scenario)', () => {
+    const joseph = CLASS_ANTHROPOMETRY.find((s) => s.id === 'joseph')!;
+    // Build synthetic 3D worldLandmarks in meters (1.0 m = 100 cm):
+    // Feet planted facing -Z (toward camera), ankles at x = ±0.12 m, y = 0.85 m, heels at y = 0.92 m (floor).
+    // Hands twisted ~85° to worker's right (-X) reaching 0.48 m right & 0.04 m forward at V = 90 cm above floor (y = 0.02 m).
+    const w: PoseLandmark2D[] = Array.from({ length: 33 }, () => ({ x: 0, y: 0, z: 0, visibility: 0.95 }));
+    w[LM.NOSE] = { x: -0.1, y: -0.62, z: -0.1, visibility: 0.95 };
+    w[LM.LEFT_EYE] = { x: -0.08, y: -0.65, z: -0.09, visibility: 0.95 };
+    w[LM.RIGHT_EYE] = { x: -0.11, y: -0.65, z: -0.09, visibility: 0.95 };
+    w[LM.LEFT_EAR] = { x: 0.0, y: -0.63, z: -0.02, visibility: 0.95 };
+    w[LM.RIGHT_EAR] = { x: -0.06, y: -0.63, z: -0.02, visibility: 0.95 };
+    // Shoulders rotated ~80° right, upper arm 0.322m, forearm 0.282m
+    w[LM.LEFT_SHOULDER] = { x: 0.02, y: -0.46, z: -0.18, visibility: 0.95 };
+    w[LM.RIGHT_SHOULDER] = { x: -0.08, y: -0.46, z: 0.19, visibility: 0.95 };
+    w[LM.LEFT_ELBOW] = { x: -0.24, y: -0.27, z: -0.14, visibility: 0.95 };
+    w[LM.RIGHT_ELBOW] = { x: -0.29, y: -0.25, z: 0.06, visibility: 0.95 };
+    w[LM.LEFT_WRIST] = { x: -0.48, y: 0.02, z: -0.08, visibility: 0.95 };
+    w[LM.RIGHT_WRIST] = { x: -0.48, y: 0.02, z: 0.0, visibility: 0.95 };
+    w[LM.LEFT_INDEX] = { x: -0.52, y: 0.02, z: -0.08, visibility: 0.95 };
+    w[LM.RIGHT_INDEX] = { x: -0.52, y: 0.02, z: 0.0, visibility: 0.95 };
+    w[LM.LEFT_HIP] = { x: 0.1, y: 0.0, z: 0.0, visibility: 0.95 };
+    w[LM.RIGHT_HIP] = { x: -0.1, y: 0.0, z: 0.0, visibility: 0.95 };
+    w[LM.LEFT_KNEE] = { x: 0.12, y: 0.42, z: -0.02, visibility: 0.95 };
+    w[LM.RIGHT_KNEE] = { x: -0.12, y: 0.42, z: -0.02, visibility: 0.95 };
+    w[LM.LEFT_ANKLE] = { x: 0.12, y: 0.85, z: 0.0, visibility: 0.95 };
+    w[LM.RIGHT_ANKLE] = { x: -0.12, y: 0.85, z: 0.0, visibility: 0.95 };
+    w[LM.LEFT_HEEL] = { x: 0.12, y: 0.92, z: 0.05, visibility: 0.95 };
+    w[LM.RIGHT_HEEL] = { x: -0.12, y: 0.92, z: 0.05, visibility: 0.95 };
+    w[LM.LEFT_FOOT_INDEX] = { x: 0.12, y: 0.92, z: -0.19, visibility: 0.95 };
+    w[LM.RIGHT_FOOT_INDEX] = { x: -0.12, y: 0.92, z: -0.19, visibility: 0.95 };
+
+    const pose2D = createSyntheticPose({
+      // Match the 2D hand position (~50 cm laterally, 90 cm vertically above floor on 1000x1000 @ 4 px/cm -> 0.25 cm/px)
+      [LM.LEFT_WRIST]: { x: (400 - 48 * 4) / 1000, y: (900 - 90 * 4) / 1000 },
+      [LM.RIGHT_WRIST]: { x: (400 - 48 * 4) / 1000, y: (900 - 90 * 4) / 1000 },
+      [LM.LEFT_INDEX]: { x: (400 - 52 * 4) / 1000, y: (900 - 90 * 4) / 1000 },
+      [LM.RIGHT_INDEX]: { x: (400 - 52 * 4) / 1000, y: (900 - 90 * 4) / 1000 },
+    });
+    const cal = calibrateFromAnthropometry(pose2D, 1000, 1000, joseph, {
+      cameraViewMode: 'front_top',
+      worldLandmarks: w,
+      standingAnchor: {
+        cmPerPixel: 0.25,
+        realCmPerWorldMeter: 100,
+        floorY: 900,
+        confidence: 0.94,
+        segmentsUsed: [],
+        capturedAtSec: 0,
+      },
+    });
+    const angles = extractBodyAngles(pose2D, 1000, 1000, w);
+    const geom = computeNioshLiveGeometry(pose2D, 1000, 1000, cal, angles, getErgonomicZones(joseph), undefined, w);
+
+    // Hands reached ~50 cm right (-X) and ~4 cm forward (-Z) -> A ≈ 85°, H ≈ 50 cm, V = 90 cm!
+    expect(angles.asymmetryAngleDeg).toBeGreaterThan(78);
+    expect(angles.asymmetryAngleDeg).toBeLessThan(95);
+    expect(geom.H_cm).toBeGreaterThan(46);
+    expect(geom.H_cm).toBeLessThan(55);
+    expect(geom.V_cm).toBeCloseTo(90, 0);
   });
 
   it('flags missing feet when ankles are clipped out of frame', () => {

@@ -10,6 +10,8 @@ import type {
 // MediaPipe Pose 33-landmark indices
 export const LM = {
   NOSE: 0,
+  LEFT_EYE: 2,
+  RIGHT_EYE: 5,
   LEFT_EAR: 7,
   RIGHT_EAR: 8,
   LEFT_SHOULDER: 11,
@@ -34,6 +36,12 @@ export const LM = {
   RIGHT_FOOT_INDEX: 32,
 } as const;
 
+interface Vec3 {
+  x: number;
+  y: number;
+  z: number;
+}
+
 export function toPixel(lm: PoseLandmark2D, width: number, height: number): Point2D {
   return { x: lm.x * width, y: lm.y * height };
 }
@@ -46,22 +54,43 @@ export function midpoint2D(a: Point2D, b: Point2D): Point2D {
   return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
 }
 
-function angleBetween3D(
-  a: { x: number; y: number; z: number },
-  vertex: { x: number; y: number; z: number },
-  b: { x: number; y: number; z: number }
-): number {
-  const v1 = { x: a.x - vertex.x, y: a.y - vertex.y, z: a.z - vertex.z };
-  const v2 = { x: b.x - vertex.x, y: b.y - vertex.y, z: b.z - vertex.z };
+function sub3(a: Vec3, b: Vec3): Vec3 {
+  return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z };
+}
+
+function mid3(a: Vec3, b: Vec3): Vec3 {
+  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, z: (a.z + b.z) / 2 };
+}
+
+function dot3(a: Vec3, b: Vec3): number {
+  return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+function cross3(a: Vec3, b: Vec3): Vec3 {
+  return {
+    x: a.y * b.z - a.z * b.y,
+    y: a.z * b.x - a.x * b.z,
+    z: a.x * b.y - a.y * b.x,
+  };
+}
+
+function norm3(v: Vec3): Vec3 {
+  const m = Math.hypot(v.x, v.y, v.z);
+  if (m < 1e-6) return { x: 0, y: 0, z: 0 };
+  return { x: v.x / m, y: v.y / m, z: v.z / m };
+}
+
+function angleBetween3D(a: Vec3, vertex: Vec3, b: Vec3): number {
+  const v1 = sub3(a, vertex);
+  const v2 = sub3(b, vertex);
   const mag1 = Math.hypot(v1.x, v1.y, v1.z);
   const mag2 = Math.hypot(v2.x, v2.y, v2.z);
   if (mag1 < 1e-6 || mag2 < 1e-6) return 0;
-  const cos = Math.max(-1, Math.min(1, (v1.x * v2.x + v1.y * v2.y + v1.z * v2.z) / (mag1 * mag2)));
+  const cos = Math.max(-1, Math.min(1, dot3(v1, v2) / (mag1 * mag2)));
   return (Math.acos(cos) * 180) / Math.PI;
 }
 
 function angleFromVertical2D(from: Point2D, to: Point2D): number {
-  // Vector pointing UP in image coords is (0, -1)
   const dx = to.x - from.x;
   const dy = to.y - from.y;
   const mag = Math.hypot(dx, dy);
@@ -84,6 +113,60 @@ function angleBetween2D(a: Point2D, vertex: Point2D, b: Point2D): number {
 
 function round1(n: number): number {
   return Math.round(n * 10) / 10;
+}
+
+/**
+ * Computes a stable horizontal XZ unit vector representing the worker's neutral sagittal facing direction
+ * (perpendicular to the inner-ankle stance line, oriented forward using heel-to-toe & pelvis vectors).
+ */
+function computeSagittalForwardXZ(world: PoseLandmark2D[]): { x: number; z: number } {
+  const lAnk = world[LM.LEFT_ANKLE];
+  const rAnk = world[LM.RIGHT_ANKLE];
+  const lHeel = world[LM.LEFT_HEEL];
+  const rHeel = world[LM.RIGHT_HEEL];
+  const lFoot = world[LM.LEFT_FOOT_INDEX];
+  const rFoot = world[LM.RIGHT_FOOT_INDEX];
+
+  // Foot forward average vector in XZ
+  const footFwd = {
+    x: (lFoot.x - lHeel.x + (rFoot.x - rHeel.x)) / 2,
+    z: (lFoot.z - lHeel.z + (rFoot.z - rHeel.z)) / 2,
+  };
+  const fMag = Math.hypot(footFwd.x, footFwd.z);
+
+  // Stance lateral line (Left Ankle -> Right Ankle) in XZ; its perpendicular is much less noisy in Z!
+  const latX = rAnk.x - lAnk.x;
+  const latZ = rAnk.z - lAnk.z;
+  const latMag = Math.hypot(latX, latZ);
+
+  if (latMag > 0.08) {
+    // Two candidate perpendiculars to stance line in XZ: (-latZ, latX) and (latZ, -latX)
+    let px = -latZ / latMag;
+    let pz = latX / latMag;
+    // Choose the sign aligned with heel->toe forward direction (or nose/knees if feet are flat)
+    const refX = fMag > 0.03 ? footFwd.x : world[LM.NOSE].x - (world[LM.LEFT_HIP].x + world[LM.RIGHT_HIP].x) / 2;
+    const refZ = fMag > 0.03 ? footFwd.z : world[LM.NOSE].z - (world[LM.LEFT_HIP].z + world[LM.RIGHT_HIP].z) / 2;
+    if (px * refX + pz * refZ < 0) {
+      px = -px;
+      pz = -pz;
+    }
+
+    if (fMag > 0.04) {
+      const fx = footFwd.x / fMag;
+      const fz = footFwd.z / fMag;
+      // Blend 70% stance-perpendicular + 30% heel-to-toe for maximum stability
+      const bx = px * 0.7 + fx * 0.3;
+      const bz = pz * 0.7 + fz * 0.3;
+      const bm = Math.hypot(bx, bz) || 1;
+      return { x: bx / bm, z: bz / bm };
+    }
+    return { x: px, z: pz };
+  }
+
+  if (fMag > 0.03) {
+    return { x: footFwd.x / fMag, z: footFwd.z / fMag };
+  }
+  return { x: 0, z: -1 };
 }
 
 export function extractBodyAngles(
@@ -115,136 +198,156 @@ export function extractBodyAngles(
   const midSh = midpoint2D(lSh, rSh);
   const midHip = midpoint2D(lHip, rHip);
   const midEar = midpoint2D(lEar, rEar);
-
-  // Facing sign: +1 if facing right in image, -1 if facing left
   const facingRight = px(LM.NOSE).x >= midSh.x ? 1 : -1;
 
-  // Trunk flexion angle from vertical (0 = upright, >0 = forward bend)
-  // Prefer 3D worldLandmarks when available so bending toward the camera doesn't invert >90° to 160°+
+  const hasWorld = Boolean(worldLandmarks && worldLandmarks.length >= 33);
+
   let trunkFlexionDeg = 0;
-  if (worldLandmarks && worldLandmarks.length >= 33) {
-    const wMidSh = {
-      x: (worldLandmarks[LM.LEFT_SHOULDER].x + worldLandmarks[LM.RIGHT_SHOULDER].x) / 2,
-      y: (worldLandmarks[LM.LEFT_SHOULDER].y + worldLandmarks[LM.RIGHT_SHOULDER].y) / 2,
-      z: (worldLandmarks[LM.LEFT_SHOULDER].z + worldLandmarks[LM.RIGHT_SHOULDER].z) / 2,
-    };
-    const wMidHip = {
-      x: (worldLandmarks[LM.LEFT_HIP].x + worldLandmarks[LM.RIGHT_HIP].x) / 2,
-      y: (worldLandmarks[LM.LEFT_HIP].y + worldLandmarks[LM.RIGHT_HIP].y) / 2,
-      z: (worldLandmarks[LM.LEFT_HIP].z + worldLandmarks[LM.RIGHT_HIP].z) / 2,
-    };
-    const vx = wMidSh.x - wMidHip.x;
-    const vy = wMidSh.y - wMidHip.y; // negative = upward in MediaPipe world coords
-    const vz = wMidSh.z - wMidHip.z;
-    const vMag = Math.hypot(vx, vy, vz) || 1;
-    const cosUp = Math.max(-1, Math.min(1, -vy / vMag));
-    const deg3D = (Math.acos(cosUp) * 180) / Math.PI;
-    // Clamp physiological trunk flexion range (0..115°)
-    trunkFlexionDeg = Math.min(115, deg3D);
-  } else {
-    const rawTrunkAngle = angleFromVertical2D(midHip, midSh);
-    const forwardComponent = (midSh.x - midHip.x) * facingRight;
-    const signed = forwardComponent >= -5 ? rawTrunkAngle : -rawTrunkAngle;
-    trunkFlexionDeg = Math.max(-45, Math.min(115, signed));
-  }
-
-  // Neck flexion relative to trunk vector (midHip->midSh vs midSh->midEar)
-  let neckFlexionDeg = 0;
-  if (worldLandmarks && worldLandmarks.length >= 33) {
-    const wMidSh = {
-      x: (worldLandmarks[LM.LEFT_SHOULDER].x + worldLandmarks[LM.RIGHT_SHOULDER].x) / 2,
-      y: (worldLandmarks[LM.LEFT_SHOULDER].y + worldLandmarks[LM.RIGHT_SHOULDER].y) / 2,
-      z: (worldLandmarks[LM.LEFT_SHOULDER].z + worldLandmarks[LM.RIGHT_SHOULDER].z) / 2,
-    };
-    const wMidHip = {
-      x: (worldLandmarks[LM.LEFT_HIP].x + worldLandmarks[LM.RIGHT_HIP].x) / 2,
-      y: (worldLandmarks[LM.LEFT_HIP].y + worldLandmarks[LM.RIGHT_HIP].y) / 2,
-      z: (worldLandmarks[LM.LEFT_HIP].z + worldLandmarks[LM.RIGHT_HIP].z) / 2,
-    };
-    const wMidEar = {
-      x: (worldLandmarks[LM.LEFT_EAR].x + worldLandmarks[LM.RIGHT_EAR].x) / 2,
-      y: (worldLandmarks[LM.LEFT_EAR].y + worldLandmarks[LM.RIGHT_EAR].y) / 2,
-      z: (worldLandmarks[LM.LEFT_EAR].z + worldLandmarks[LM.RIGHT_EAR].z) / 2,
-    };
-    const tVec = { x: wMidSh.x - wMidHip.x, y: wMidSh.y - wMidHip.y, z: wMidSh.z - wMidHip.z };
-    const nVec = { x: wMidEar.x - wMidSh.x, y: wMidEar.y - wMidSh.y, z: wMidEar.z - wMidSh.z };
-    const tM = Math.hypot(tVec.x, tVec.y, tVec.z) || 1;
-    const nM = Math.hypot(nVec.x, nVec.y, nVec.z) || 1;
-    const c = Math.max(-1, Math.min(1, (tVec.x * nVec.x + tVec.y * nVec.y + tVec.z * nVec.z) / (tM * nM)));
-    neckFlexionDeg = Math.min(60, (Math.acos(c) * 180) / Math.PI);
-  } else {
-    const trunkVec = { x: midSh.x - midHip.x, y: midSh.y - midHip.y };
-    const neckVec = { x: midEar.x - midSh.x, y: midEar.y - midSh.y };
-    const tMag = Math.hypot(trunkVec.x, trunkVec.y) || 1;
-    const nMag = Math.hypot(neckVec.x, neckVec.y) || 1;
-    const dotTN = Math.max(-1, Math.min(1, (trunkVec.x * neckVec.x + trunkVec.y * neckVec.y) / (tMag * nMag)));
-    const neckDelta = (Math.acos(dotTN) * 180) / Math.PI;
-    const crossTN = (trunkVec.x * neckVec.y - trunkVec.y * neckVec.x) * facingRight;
-    neckFlexionDeg = Math.max(-35, Math.min(60, crossTN >= 0 ? neckDelta : -neckDelta));
-  }
-
-  // Trunk & neck side bend / twist using 3D world landmarks when available
   let trunkTwistDeg = 0;
   let trunkSideBendDeg = 0;
+  let neckFlexionDeg = 0;
   let neckTwistDeg = 0;
   let neckSideBendDeg = 0;
   let asymmetryAngleDeg = 0;
+  let leftUpperArmFlexionDeg = 0;
+  let rightUpperArmFlexionDeg = 0;
+  let leftUpperArmAbducted = false;
+  let rightUpperArmAbducted = false;
+  let leftArmCrossesMidline = false;
+  let rightArmCrossesMidline = false;
+  let leftLowerArmFlexionDeg = 0;
+  let rightLowerArmFlexionDeg = 0;
+  let leftWristFlexionDeg = 0;
+  let rightWristFlexionDeg = 0;
+  let leftKneeFlexionDeg = 0;
+  let rightKneeFlexionDeg = 0;
 
-  if (worldLandmarks && worldLandmarks.length >= 33) {
-    const wLSh = worldLandmarks[LM.LEFT_SHOULDER];
-    const wRSh = worldLandmarks[LM.RIGHT_SHOULDER];
-    const wLHip = worldLandmarks[LM.LEFT_HIP];
-    const wRHip = worldLandmarks[LM.RIGHT_HIP];
-    const wLAnk = worldLandmarks[LM.LEFT_ANKLE];
-    const wRAnk = worldLandmarks[LM.RIGHT_ANKLE];
-    const wLWr = worldLandmarks[LM.LEFT_WRIST];
-    const wRWr = worldLandmarks[LM.RIGHT_WRIST];
-    const wLHeel = worldLandmarks[LM.LEFT_HEEL];
-    const wRHeel = worldLandmarks[LM.RIGHT_HEEL];
-    const wLFoot = worldLandmarks[LM.LEFT_FOOT_INDEX];
-    const wRFoot = worldLandmarks[LM.RIGHT_FOOT_INDEX];
+  if (hasWorld && worldLandmarks) {
+    const w = worldLandmarks;
+    const wLSh = w[LM.LEFT_SHOULDER];
+    const wRSh = w[LM.RIGHT_SHOULDER];
+    const wLHip = w[LM.LEFT_HIP];
+    const wRHip = w[LM.RIGHT_HIP];
+    const wMidSh = mid3(wLSh, wRSh);
+    const wMidHip = mid3(wLHip, wRHip);
+    const wMidEar = mid3(w[LM.LEFT_EAR], w[LM.RIGHT_EAR]);
+    const wNose = w[LM.NOSE];
 
-    // Horizontal XZ plane vectors for shoulder line vs hip line -> trunk twist
+    // Anatomical torso frame:
+    // trunkUp = hip -> shoulder, torsoRight = leftHip -> rightHip, torsoForward = cross(torsoRight, trunkUp)
+    const trunkVec = sub3(wMidSh, wMidHip);
+    const trunkUp = norm3(trunkVec);
+    const shRight = norm3(sub3(wRSh, wLSh));
+    let torsoFwd = norm3(cross3(trunkUp, shRight));
+    // Ensure torsoFwd points toward the nose side of the head
+    if (dot3(torsoFwd, sub3(wNose, wMidEar)) < 0) {
+      torsoFwd = { x: -torsoFwd.x, y: -torsoFwd.y, z: -torsoFwd.z };
+    }
+
+    // 1. Trunk Flexion (3D angle from gravity up (0,-1,0), signed positive when leaning forward)
+    const cosUp = Math.max(-1, Math.min(1, -trunkUp.y));
+    const magTrunkDeg = (Math.acos(cosUp) * 180) / Math.PI;
+    // Check horizontal lean direction relative to pelvis/stance forward
+    const pelvisFwd = computeSagittalForwardXZ(w);
+    const leanDot = trunkUp.x * pelvisFwd.x + trunkUp.z * pelvisFwd.z;
+    const signedTrunk = leanDot >= -0.15 ? magTrunkDeg : -magTrunkDeg;
+    trunkFlexionDeg = Math.max(-45, Math.min(110, signedTrunk));
+
+    // 2. Trunk Twist (shoulders vs hips in horizontal XZ) & Side Bend
     const shXZ = { x: wRSh.x - wLSh.x, z: wRSh.z - wLSh.z };
     const hipXZ = { x: wRHip.x - wLHip.x, z: wRHip.z - wLHip.z };
     const shMag = Math.hypot(shXZ.x, shXZ.z) || 1;
     const hipMag = Math.hypot(hipXZ.x, hipXZ.z) || 1;
     const twistCos = Math.max(-1, Math.min(1, (shXZ.x * hipXZ.x + shXZ.z * hipXZ.z) / (shMag * hipMag)));
     trunkTwistDeg = (Math.acos(twistCos) * 180) / Math.PI;
-
-    // Shoulder tilt in Y -> side bend proxy
     trunkSideBendDeg = (Math.atan2(Math.abs(wRSh.y - wLSh.y), shMag) * 180) / Math.PI;
 
-    // Neck twist (ears vs shoulders in XZ)
+    // 3. Neck Flexion (3D signed angle between trunkUp and shoulder->ear vector)
+    const neckDir = norm3(sub3(wMidEar, wMidSh));
+    const neckMag = (Math.acos(Math.max(-1, Math.min(1, dot3(trunkUp, neckDir)))) * 180) / Math.PI;
+    const neckForwardProj = dot3(neckDir, torsoFwd);
+    // Natural standing ear sits slightly forward (~8 deg), so compare against slight neutral offset
+    neckFlexionDeg = Math.max(-35, Math.min(60, neckForwardProj >= -0.05 ? neckMag : -neckMag));
+
+    // Neck twist (ears vs shoulders in XZ) & side bend
     const earXZ = {
-      x: worldLandmarks[LM.RIGHT_EAR].x - worldLandmarks[LM.LEFT_EAR].x,
-      z: worldLandmarks[LM.RIGHT_EAR].z - worldLandmarks[LM.LEFT_EAR].z,
+      x: w[LM.RIGHT_EAR].x - w[LM.LEFT_EAR].x,
+      z: w[LM.RIGHT_EAR].z - w[LM.LEFT_EAR].z,
     };
     const earMag = Math.hypot(earXZ.x, earXZ.z) || 1;
     const nTwistCos = Math.max(-1, Math.min(1, (earXZ.x * shXZ.x + earXZ.z * shXZ.z) / (earMag * shMag)));
     neckTwistDeg = (Math.acos(nTwistCos) * 180) / Math.PI;
-    neckSideBendDeg = (Math.atan2(Math.abs(worldLandmarks[LM.RIGHT_EAR].y - worldLandmarks[LM.LEFT_EAR].y), earMag) * 180) / Math.PI;
+    neckSideBendDeg = (Math.atan2(Math.abs(w[LM.RIGHT_EAR].y - w[LM.LEFT_EAR].y), earMag) * 180) / Math.PI;
 
-    // NIOSH Angle of Asymmetry (A): angle in horizontal XZ plane between sagittal foot facing line & ankle-mid to hand-mid vector
-    const footFwd = {
-      x: (wLFoot.x - wLHeel.x + (wRFoot.x - wRHeel.x)) / 2,
-      z: (wLFoot.z - wLHeel.z + (wRFoot.z - wRHeel.z)) / 2,
-    };
-    const ankMid = { x: (wLAnk.x + wRAnk.x) / 2, z: (wLAnk.z + wRAnk.z) / 2 };
-    const handMid = { x: (wLWr.x + wRWr.x) / 2, z: (wLWr.z + wRWr.z) / 2 };
-    const loadVec = { x: handMid.x - ankMid.x, z: handMid.z - ankMid.z };
-    const fMag = Math.hypot(footFwd.x, footFwd.z);
-    const lMag = Math.hypot(loadVec.x, loadVec.z);
-    if (fMag > 0.03 && lMag > 0.03) {
-      const aCos = Math.max(-1, Math.min(1, (footFwd.x * loadVec.x + footFwd.z * loadVec.z) / (fMag * lMag)));
+    // 4. NIOSH Asymmetry Angle A (Slide 25 Figure 2):
+    // Angle in horizontal XZ plane between stance sagittal forward vector and ankle-mid -> hand-mid vector.
+    // MediaPipe monocular pose exaggerates camera-axis Z-depth (~1.6-1.8x) when bending/reaching toward camera;
+    // damping camera-axis Z (0.58x) prevents both H inflation and A underestimation during lateral twists!
+    const ankMid = mid3(w[LM.LEFT_ANKLE], w[LM.RIGHT_ANKLE]);
+    const handMid = mid3(
+      mid3(w[LM.LEFT_WRIST], w[LM.LEFT_INDEX]),
+      mid3(w[LM.RIGHT_WRIST], w[LM.RIGHT_INDEX])
+    );
+    const Z_DAMP = 0.48;
+    const loadXZ = { x: handMid.x - ankMid.x, z: (handMid.z - ankMid.z) * Z_DAMP };
+    const loadMag = Math.hypot(loadXZ.x, loadXZ.z);
+    if (loadMag > 0.05) {
+      const aCos = Math.max(-1, Math.min(1, (pelvisFwd.x * loadXZ.x + pelvisFwd.z * loadXZ.z) / loadMag));
       asymmetryAngleDeg = Math.min(135, (Math.acos(aCos) * 180) / Math.PI);
     } else {
       asymmetryAngleDeg = trunkTwistDeg;
     }
+
+    // 5. 3D Upper Arm Flexion/Extension & True 3D Lateral Abduction
+    const trunkDown = { x: -trunkUp.x, y: -trunkUp.y, z: -trunkUp.z };
+    const compute3DUpperArm = (shPt: Vec3, elPt: Vec3, wrPt: Vec3, isRight: boolean) => {
+      const armDir = norm3(sub3(elPt, shPt));
+      const totalAngle = (Math.acos(Math.max(-1, Math.min(1, dot3(trunkDown, armDir)))) * 180) / Math.PI;
+      const fwdComp = dot3(armDir, torsoFwd);
+      const latSign = isRight ? 1 : -1;
+      const latComp = dot3(armDir, shRight) * latSign; // >0 = outward abduction away from trunk
+      const flexion = fwdComp >= -0.15 ? totalAngle : -totalAngle;
+      const abducted = latComp > 0.36; // > ~21 deg outward abduction
+      // Check if wrist crosses torso midline toward opposite side
+      const wrOffsetLat = dot3(sub3(wrPt, wMidSh), shRight) * latSign;
+      const crossesMidline = wrOffsetLat < -0.05;
+      return { flexion, abducted, crossesMidline };
+    };
+
+    const uaL = compute3DUpperArm(wLSh, w[LM.LEFT_ELBOW], w[LM.LEFT_WRIST], false);
+    const uaR = compute3DUpperArm(wRSh, w[LM.RIGHT_ELBOW], w[LM.RIGHT_WRIST], true);
+    leftUpperArmFlexionDeg = uaL.flexion;
+    rightUpperArmFlexionDeg = uaR.flexion;
+    leftUpperArmAbducted = uaL.abducted;
+    rightUpperArmAbducted = uaR.abducted;
+    leftArmCrossesMidline = uaL.crossesMidline;
+    rightArmCrossesMidline = uaR.crossesMidline;
+
+    // 6. 3D Elbow (Lower Arm), Wrist, and Knee Flexion
+    leftLowerArmFlexionDeg = Math.max(0, 180 - angleBetween3D(wLSh, w[LM.LEFT_ELBOW], w[LM.LEFT_WRIST]));
+    rightLowerArmFlexionDeg = Math.max(0, 180 - angleBetween3D(wRSh, w[LM.RIGHT_ELBOW], w[LM.RIGHT_WRIST]));
+    leftWristFlexionDeg = Math.max(0, 180 - angleBetween3D(w[LM.LEFT_ELBOW], w[LM.LEFT_WRIST], w[LM.LEFT_INDEX]));
+    rightWristFlexionDeg = Math.max(0, 180 - angleBetween3D(w[LM.RIGHT_ELBOW], w[LM.RIGHT_WRIST], w[LM.RIGHT_INDEX]));
+    leftKneeFlexionDeg = Math.max(0, 180 - angleBetween3D(wLHip, w[LM.LEFT_KNEE], w[LM.LEFT_ANKLE]));
+    rightKneeFlexionDeg = Math.max(0, 180 - angleBetween3D(wRHip, w[LM.RIGHT_KNEE], w[LM.RIGHT_ANKLE]));
   } else {
-    // 2D fallback estimate for side bend & asymmetry
+    // 2D fallback (used in synthetic 2D unit tests when worldLandmarks are omitted)
+    const rawTrunkAngle = angleFromVertical2D(midHip, midSh);
+    const forwardComponent = (midSh.x - midHip.x) * facingRight;
+    trunkFlexionDeg = Math.max(-45, Math.min(110, forwardComponent >= -5 ? rawTrunkAngle : -rawTrunkAngle));
+
+    const trunkVec2 = { x: midSh.x - midHip.x, y: midSh.y - midHip.y };
+    const neckVec2 = { x: midEar.x - midSh.x, y: midEar.y - midSh.y };
+    const tMag = Math.hypot(trunkVec2.x, trunkVec2.y) || 1;
+    const nMag = Math.hypot(neckVec2.x, neckVec2.y) || 1;
+    const dotTN = Math.max(-1, Math.min(1, (trunkVec2.x * neckVec2.x + trunkVec2.y * neckVec2.y) / (tMag * nMag)));
+    const neckDelta = (Math.acos(dotTN) * 180) / Math.PI;
+    const crossTN = (trunkVec2.x * neckVec2.y - trunkVec2.y * neckVec2.x) * facingRight;
+    neckFlexionDeg = Math.max(-35, Math.min(60, crossTN >= 0 ? neckDelta : -neckDelta));
+
     const shWidthPx = Math.abs(rSh.x - lSh.x);
     trunkSideBendDeg = shWidthPx > 20 ? (Math.atan2(Math.abs(rSh.y - lSh.y), shWidthPx) * 180) / Math.PI : 0;
+
     const midAnk = midpoint2D(lAnk, rAnk);
     const midWr = midpoint2D(lWr, rWr);
     const midFoot = midpoint2D(px(LM.LEFT_FOOT_INDEX), px(LM.RIGHT_FOOT_INDEX));
@@ -256,61 +359,35 @@ export function extractBodyAngles(
       const c = Math.max(-1, Math.min(1, (footVec.x * handVec.x + footVec.y * handVec.y) / (fM * hM)));
       asymmetryAngleDeg = Math.min(135, (Math.acos(c) * 180) / Math.PI);
     }
+
+    const computeUpperArm2D = (sh: Point2D, hip: Point2D, el: Point2D) => {
+      const downTrunk = { x: hip.x - sh.x, y: hip.y - sh.y };
+      const arm = { x: el.x - sh.x, y: el.y - sh.y };
+      const m1 = Math.hypot(downTrunk.x, downTrunk.y) || 1;
+      const m2 = Math.hypot(arm.x, arm.y) || 1;
+      const c = Math.max(-1, Math.min(1, (downTrunk.x * arm.x + downTrunk.y * arm.y) / (m1 * m2)));
+      const deg = (Math.acos(c) * 180) / Math.PI;
+      const forward = (el.x - sh.x) * facingRight;
+      return forward >= -10 ? deg : -deg;
+    };
+    leftUpperArmFlexionDeg = computeUpperArm2D(lSh, lHip, lEl);
+    rightUpperArmFlexionDeg = computeUpperArm2D(rSh, rHip, rEl);
+    leftLowerArmFlexionDeg = Math.max(0, 180 - angleBetween2D(lSh, lEl, lWr));
+    rightLowerArmFlexionDeg = Math.max(0, 180 - angleBetween2D(rSh, rEl, rWr));
+    leftWristFlexionDeg = Math.max(0, 180 - angleBetween2D(lEl, lWr, lIdx));
+    rightWristFlexionDeg = Math.max(0, 180 - angleBetween2D(rEl, rWr, rIdx));
+    leftKneeFlexionDeg = Math.max(0, 180 - angleBetween2D(lHip, lKnee, lAnk));
+    rightKneeFlexionDeg = Math.max(0, 180 - angleBetween2D(rHip, rKnee, rAnk));
   }
 
-  // Knees flexion (0 = straight leg, >0 = bent knee)
-  const leftKneeInterior =
-    worldLandmarks && worldLandmarks.length >= 33
-      ? angleBetween3D(worldLandmarks[LM.LEFT_HIP], worldLandmarks[LM.LEFT_KNEE], worldLandmarks[LM.LEFT_ANKLE])
-      : angleBetween2D(lHip, lKnee, lAnk);
-  const rightKneeInterior =
-    worldLandmarks && worldLandmarks.length >= 33
-      ? angleBetween3D(worldLandmarks[LM.RIGHT_HIP], worldLandmarks[LM.RIGHT_KNEE], worldLandmarks[LM.RIGHT_ANKLE])
-      : angleBetween2D(rHip, rKnee, rAnk);
-  const leftKneeFlexionDeg = Math.max(0, 180 - leftKneeInterior);
-  const rightKneeFlexionDeg = Math.max(0, 180 - rightKneeInterior);
   const maxKneeFlexionDeg = Math.max(leftKneeFlexionDeg, rightKneeFlexionDeg);
 
-  // Upper Arm flexion relative to trunk (shoulder-hip vs shoulder-elbow)
-  const computeUpperArmFlex = (sh: Point2D, hip: Point2D, el: Point2D) => {
-    const downTrunk = { x: hip.x - sh.x, y: hip.y - sh.y };
-    const arm = { x: el.x - sh.x, y: el.y - sh.y };
-    const m1 = Math.hypot(downTrunk.x, downTrunk.y) || 1;
-    const m2 = Math.hypot(arm.x, arm.y) || 1;
-    const c = Math.max(-1, Math.min(1, (downTrunk.x * arm.x + downTrunk.y * arm.y) / (m1 * m2)));
-    const deg = (Math.acos(c) * 180) / Math.PI;
-    const forward = (el.x - sh.x) * facingRight;
-    return forward >= -10 ? deg : -deg;
-  };
-  const leftUpperArmFlexionDeg = computeUpperArmFlex(lSh, lHip, lEl);
-  const rightUpperArmFlexionDeg = computeUpperArmFlex(rSh, rHip, rEl);
-
-  // Lower Arm flexion (0 = fully extended straight arm, 90 = right angle at elbow)
-  const leftElbowInterior =
-    worldLandmarks && worldLandmarks.length >= 33
-      ? angleBetween3D(worldLandmarks[LM.LEFT_SHOULDER], worldLandmarks[LM.LEFT_ELBOW], worldLandmarks[LM.LEFT_WRIST])
-      : angleBetween2D(lSh, lEl, lWr);
-  const rightElbowInterior =
-    worldLandmarks && worldLandmarks.length >= 33
-      ? angleBetween3D(worldLandmarks[LM.RIGHT_SHOULDER], worldLandmarks[LM.RIGHT_ELBOW], worldLandmarks[LM.RIGHT_WRIST])
-      : angleBetween2D(rSh, rEl, rWr);
-  const leftLowerArmFlexionDeg = Math.max(0, 180 - leftElbowInterior);
-  const rightLowerArmFlexionDeg = Math.max(0, 180 - rightElbowInterior);
-
-  // Wrist flexion (deviation from straight elbow->wrist->index line)
-  const leftWristFlexionDeg = Math.max(0, 180 - angleBetween2D(lEl, lWr, lIdx));
-  const rightWristFlexionDeg = Math.max(0, 180 - angleBetween2D(rEl, rWr, rIdx));
-
-  // Shoulder raised / abducted proxies
+  // Shoulder raised proxy (ears close to shoulders when upright)
   const earToShDistL = Math.abs(lEar.y - lSh.y);
   const earToShDistR = Math.abs(rEar.y - rSh.y);
   const torsoPx = Math.max(30, dist2D(midSh, midHip));
-  const leftShoulderRaised = earToShDistL < torsoPx * 0.16 && Math.abs(trunkFlexionDeg) < 25;
-  const rightShoulderRaised = earToShDistR < torsoPx * 0.16 && Math.abs(trunkFlexionDeg) < 25;
-
-  const shWidthPx = Math.max(10, dist2D(lSh, rSh));
-  const leftUpperArmAbducted = Math.abs(lEl.x - lSh.x) > shWidthPx * 0.9 && shWidthPx > torsoPx * 0.35;
-  const rightUpperArmAbducted = Math.abs(rEl.x - rSh.x) > shWidthPx * 0.9 && shWidthPx > torsoPx * 0.35;
+  const leftShoulderRaised = earToShDistL < torsoPx * 0.14 && Math.abs(trunkFlexionDeg) < 25;
+  const rightShoulderRaised = earToShDistR < torsoPx * 0.14 && Math.abs(trunkFlexionDeg) < 25;
 
   // Slide 32 safety checks
   const feetVisible =
@@ -323,9 +400,10 @@ export function extractBodyAngles(
 
   const kneelingSuspected = maxKneeFlexionDeg > 95;
   const wristHeightDiffPx = Math.abs(lWr.y - rWr.y);
-  const oneHandSuspected = wristHeightDiffPx > torsoPx * 0.65 && vis(LM.LEFT_WRIST) > 0.5 && vis(LM.RIGHT_WRIST) > 0.5;
+  const oneHandSuspected =
+    wristHeightDiffPx > torsoPx * 0.65 && vis(LM.LEFT_WRIST) > 0.5 && vis(LM.RIGHT_WRIST) > 0.5;
 
-  // Dominant side: choose the arm with higher visibility or greater flexion
+  // Dominant side selection
   const leftVis = (vis(LM.LEFT_SHOULDER) + vis(LM.LEFT_ELBOW) + vis(LM.LEFT_WRIST)) / 3;
   const rightVis = (vis(LM.RIGHT_SHOULDER) + vis(LM.RIGHT_ELBOW) + vis(LM.RIGHT_WRIST)) / 3;
   let dominantSide: 'left' | 'right' = rightVis >= leftVis ? 'right' : 'left';
@@ -353,6 +431,8 @@ export function extractBodyAngles(
     rightLowerArmFlexionDeg: round1(rightLowerArmFlexionDeg),
     leftWristFlexionDeg: round1(leftWristFlexionDeg),
     rightWristFlexionDeg: round1(rightWristFlexionDeg),
+    leftArmCrossesMidline,
+    rightArmCrossesMidline,
     asymmetryAngleDeg: round1(asymmetryAngleDeg),
     feetVisible,
     kneelingSuspected,
@@ -392,7 +472,18 @@ export function computeNioshLiveGeometry(
 
   const ankleMidPx = customPins?.ankleMidPx ?? defaultAnkleMid;
   const handMidPx = customPins?.handMidPx ?? defaultHandMid;
-  const floorY = customPins?.floorY ?? calibration.floorY;
+  const baseFloorY = customPins?.floorY ?? calibration.floorY;
+
+  // In a front-facing slightly elevated camera, an object on the floor in front of the toes
+  // projects slightly lower on screen (near toe Y) than the heels further back.
+  // When hands drop near floor level in front of the toes, anchor floor contact to toe ground plane so V reflects true height above floor!
+  const toeFloorY = Math.max(px(LM.LEFT_FOOT_INDEX).y, px(LM.RIGHT_FOOT_INDEX).y, baseFloorY);
+  const isLowFrontReach =
+    !customPins?.floorY &&
+    calibration.detectedView === 'front_top' &&
+    handMidPx.y > baseFloorY - 22 / Math.max(0.05, calibration.cmPerPixel) &&
+    angles.trunkFlexionDeg > 45;
+  const floorY = isLowFrontReach ? toeFloorY : baseFloorY;
 
   const floorProjectionPx: Point2D = { x: handMidPx.x, y: floorY };
 
@@ -403,59 +494,56 @@ export function computeNioshLiveGeometry(
     y: ankleMidPx.y + (midFoot.y - ankleMidPx.y) * 2.5,
   };
 
-  // V = vertical height from floor line up to hands
+  // Baseline 2D vertical height V and horizontal lateral X reach (exact in camera plane when standing anchor or manual ruler is active!)
   const V_px = Math.max(0, floorY - handMidPx.y);
   let V_cm = round1(V_px * calibration.cmPerPixel);
 
-  // H = horizontal distance from ankle midpoint to hand projection on floor
-  const H_px =
+  const H_2D_x_cm = Math.abs(handMidPx.x - ankleMidPx.x) * calibration.cmPerPixel;
+  let H_cm = round1(
     calibration.detectedView === 'front_top'
-      ? dist2D(ankleMidPx, handMidPx)
-      : Math.abs(handMidPx.x - ankleMidPx.x);
-  let H_cm = round1(H_px * calibration.cmPerPixel);
+      ? Math.max(H_2D_x_cm, dist2D(ankleMidPx, handMidPx) * calibration.cmPerPixel)
+      : H_2D_x_cm
+  );
 
-  // In front/top-down views with 3D worldLandmarks (and without manual pin override),
-  // prevent perspective distortion (e.g., V clipping to 0 cm when reaching forward toward camera)
   const hasCustomPin = Boolean(customPins?.ankleMidPx || customPins?.handMidPx);
-  if (
-    !hasCustomPin &&
-    calibration.methodUsed === 'auto_anthropometry' &&
-    calibration.detectedView === 'front_top' &&
-    worldLandmarks &&
-    worldLandmarks.length >= 33
-  ) {
-    const wFloorY = Math.max(
-      worldLandmarks[LM.LEFT_HEEL].y,
-      worldLandmarks[LM.RIGHT_HEEL].y,
-      worldLandmarks[LM.LEFT_FOOT_INDEX].y,
-      worldLandmarks[LM.RIGHT_FOOT_INDEX].y
-    );
-    const wHandY =
-      (worldLandmarks[LM.LEFT_WRIST].y +
-        worldLandmarks[LM.RIGHT_WRIST].y +
-        worldLandmarks[LM.LEFT_INDEX].y +
-        worldLandmarks[LM.RIGHT_INDEX].y) /
-      4;
-    const wHandX = (worldLandmarks[LM.LEFT_WRIST].x + worldLandmarks[LM.RIGHT_WRIST].x) / 2;
-    const wHandZ = (worldLandmarks[LM.LEFT_WRIST].z + worldLandmarks[LM.RIGHT_WRIST].z) / 2;
-    const wAnkX = (worldLandmarks[LM.LEFT_ANKLE].x + worldLandmarks[LM.RIGHT_ANKLE].x) / 2;
-    const wAnkZ = (worldLandmarks[LM.LEFT_ANKLE].z + worldLandmarks[LM.RIGHT_ANKLE].z) / 2;
+  const hasWorld = Boolean(worldLandmarks && worldLandmarks.length >= 33);
 
-    // Normalize 3D MediaPipe meters to the selected student's real stature ratio
-    const wShWidthM = Math.hypot(
-      worldLandmarks[LM.LEFT_SHOULDER].x - worldLandmarks[LM.RIGHT_SHOULDER].x,
-      worldLandmarks[LM.LEFT_SHOULDER].z - worldLandmarks[LM.RIGHT_SHOULDER].z
-    );
-    const statureRatio = wShWidthM > 0.15 ? Math.min(1.25, Math.max(0.75, zones.statureCm / 170)) : 1;
+  // Combine exact camera-plane 2D X reach with monocular-damped 3D Z depth for H,
+  // while keeping pure standing-calibrated 2D vertical height for V (gravity Y has zero foreshortening in upright camera views!).
+  if (!hasCustomPin && hasWorld && worldLandmarks) {
+    const w = worldLandmarks;
+    const wScale = calibration.realCmPerWorldMeter;
+    // Deep forward stoop facing camera produces stronger monocular Z-exaggeration in MediaPipe
+    const Z_DAMP = calibration.detectedView === 'front_top' && angles.trunkFlexionDeg > 55 ? 0.42 : 0.48;
 
-    const v3DCm = Math.max(0, (wFloorY - wHandY) * 100 * statureRatio);
-    const h3DCm = Math.max(5, Math.hypot(wHandX - wAnkX, wHandZ - wAnkZ) * 100 * statureRatio);
+    const wFloorY = (w[LM.LEFT_HEEL].y + w[LM.RIGHT_HEEL].y) / 2;
+    const wHand = mid3(mid3(w[LM.LEFT_WRIST], w[LM.LEFT_INDEX]), mid3(w[LM.RIGHT_WRIST], w[LM.RIGHT_INDEX]));
+    const wAnk = mid3(w[LM.LEFT_ANKLE], w[LM.RIGHT_ANKLE]);
 
-    if (V_cm < 5 && v3DCm > 5) {
-      V_cm = round1(v3DCm);
+    // Depth component along camera Z-axis (damped) + lateral X component from exact 2D calibrated pixels!
+    const dzCm = Math.abs(wHand.z - wAnk.z) * wScale * Z_DAMP;
+    const dxWorldCm = Math.abs(wHand.x - wAnk.x) * wScale;
+    const dxReliableCm =
+      calibration.standingLocked || calibration.methodUsed === 'manual_reference'
+        ? H_2D_x_cm
+        : (H_2D_x_cm + dxWorldCm) / 2;
+
+    const hCombinedCm = Math.hypot(dxReliableCm, dzCm);
+    const v3DCm = Math.max(0, (wFloorY - wHand.y) * wScale);
+
+    // 1) H_cm: exact 2D camera-plane X combined orthogonally with damped Z-depth
+    if (hCombinedCm >= 8 && hCombinedCm <= 105) {
+      H_cm = round1(hCombinedCm);
     }
-    if (h3DCm > 10 && h3DCm < 100) {
-      H_cm = round1(h3DCm);
+
+    // 2) V_cm: trust standing-locked or manual-calibrated 2D vertical height directly (no 3D leg-length inflation!).
+    // Only fall back to 3D V when perspective clips hands below the heel line while reaching forward toward camera.
+    if (calibration.standingLocked || calibration.methodUsed === 'manual_reference') {
+      if (V_cm < 4 && v3DCm > 4 && calibration.detectedView === 'front_top') {
+        V_cm = round1(Math.min(v3DCm, 25));
+      }
+    } else if (v3DCm >= 0 && v3DCm <= zones.statureCm + 25) {
+      V_cm = round1(V_cm * 0.65 + v3DCm * 0.35);
     }
   }
 

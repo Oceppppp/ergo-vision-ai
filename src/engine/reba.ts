@@ -111,13 +111,17 @@ export function calculateReba(
   } else {
     trunkScore = 4;
   }
-  if (Math.abs(angles.trunkTwistDeg) > 15 || Math.abs(angles.trunkSideBendDeg) > 12) {
+  if (
+    Math.abs(angles.trunkTwistDeg) > 15 ||
+    Math.abs(angles.trunkSideBendDeg) > 12 ||
+    angles.asymmetryAngleDeg > 20
+  ) {
     trunkScore += 1;
   }
   trunkScore = clamp(trunkScore, 1, 5);
 
-  // 2. Neck score (1..3)
-  let neckScore = angles.neckFlexionDeg >= 0 && angles.neckFlexionDeg <= 20 ? 1 : 2;
+  // 2. Neck score (1..3) — include -5° tolerance for neutral sensor jitter
+  let neckScore = angles.neckFlexionDeg >= -5 && angles.neckFlexionDeg <= 20 ? 1 : 2;
   if (Math.abs(angles.neckTwistDeg) > 15 || Math.abs(angles.neckSideBendDeg) > 12) {
     neckScore += 1;
   }

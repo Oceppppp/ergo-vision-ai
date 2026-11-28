@@ -82,10 +82,11 @@ export function calculateRula(
   if (params.armSupported) upperArmScore -= 1;
   upperArmScore = clamp(upperArmScore, 1, 6);
 
-  // Lower Arm (1..3)
+  // Lower Arm (1..3) — +1 if working across midline or out to side of body
   const laDeg = side === 'left' ? angles.leftLowerArmFlexionDeg : angles.rightLowerArmFlexionDeg;
+  const crossesMidline = side === 'left' ? angles.leftArmCrossesMidline : angles.rightArmCrossesMidline;
   let lowerArmScore = laDeg >= 60 && laDeg <= 100 ? 1 : 2;
-  if (uaAbducted) lowerArmScore += 1;
+  if (uaAbducted || crossesMidline) lowerArmScore += 1;
   lowerArmScore = clamp(lowerArmScore, 1, 3);
 
   // Wrist (1..4) & Wrist Twist (1..2)
@@ -107,15 +108,19 @@ export function calculateRula(
   const colA = (wristScore - 1) * 2 + (wristTwistScore - 1);
   const tableAScore = RULA_TABLE_A[rowA][colA];
 
-  // Muscle Use & Force/Load
+  // Muscle Use & Force/Load (McAtamney & Corlett 1993 exact table):
+  // <2 kg intermittent = 0; 2-10 kg intermittent = +1; 2-10 kg static/repeated OR >10 kg intermittent = +2;
+  // >10 kg static/repeated OR shock/rapid buildup = +3
   const isStaticOrRepeated = params.staticPostureOver1Min || params.frequencyPerMin >= 4;
   const armMuscleScore = isStaticOrRepeated ? 1 : 0;
 
   let armForceScore = 0;
-  if (params.loadWeightKg > 10 || params.shockOrForceBuildup) {
+  if (params.shockOrForceBuildup || (params.loadWeightKg > 10 && isStaticOrRepeated)) {
     armForceScore = 3;
+  } else if (params.loadWeightKg > 10 || (params.loadWeightKg >= 2 && isStaticOrRepeated)) {
+    armForceScore = 2;
   } else if (params.loadWeightKg >= 2) {
-    armForceScore = isStaticOrRepeated ? 2 : 1;
+    armForceScore = 1;
   }
   const scoreC = tableAScore + armMuscleScore + armForceScore;
 
@@ -146,7 +151,7 @@ export function calculateRula(
   } else {
     trunkScore = 4;
   }
-  if (Math.abs(angles.trunkTwistDeg) > 15) trunkScore += 1;
+  if (Math.abs(angles.trunkTwistDeg) > 15 || angles.asymmetryAngleDeg > 20) trunkScore += 1;
   if (Math.abs(angles.trunkSideBendDeg) > 12) trunkScore += 1;
   trunkScore = clamp(trunkScore, 1, 6);
 

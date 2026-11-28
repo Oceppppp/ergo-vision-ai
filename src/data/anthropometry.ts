@@ -98,22 +98,32 @@ export function getDerivedSegments(profile: StudentProfile) {
   const d = profile.dimensions;
   // Upper arm length approximated directly from shoulder-to-floor minus elbow-to-floor
   const upperArmCm = Math.max(20, Number((d.B10 - d.B13).toFixed(1)));
-  // Ankle bone height is roughly 4.0% of standing stature (standard anthropometric ratio)
+  // Ankle bone (malleolus) height is roughly 4.0% of standing stature (standard anthropometric ratio)
   const ankleHeightCm = Number((d.B2 * 0.04).toFixed(1));
-  // Knee-to-ankle bone segment = knee height (D7) minus ankle bone height
-  const lowerLegBoneCm = Math.max(25, Number((d.D7 - ankleHeightCm).toFixed(1)));
-  // Shoulder-to-ankle bone upright segment = B10 minus ankle bone height
-  const shoulderToAnkleCm = Math.max(90, Number((d.B10 - ankleHeightCm).toFixed(1)));
-  // Shoulder-to-hip approximate torso length from sitting shoulder height (D4) minus buttock soft tissue (~2cm)
-  const torsoSegmentCm = Math.max(35, Number((d.D4 - 8).toFixed(1)));
+  // MediaPipe KNEE landmark sits at femoral-tibial joint center (~2.5 cm below top-of-patella sitting D7)
+  const kneeJointHeightCm = Math.max(30, Number((d.D7 - 2.5).toFixed(1)));
+  const lowerLegBoneCm = Math.max(25, Number((kneeJointHeightCm - ankleHeightCm).toFixed(1)));
+  // MediaPipe SHOULDER landmark sits at glenohumeral joint center (~2.5 cm below acromion B10)
+  const shoulderJointHeightCm = Math.max(100, Number((d.B10 - 2.5).toFixed(1)));
+  const shoulderToAnkleCm = Math.max(90, Number((shoulderJointHeightCm - ankleHeightCm).toFixed(1)));
+  // MediaPipe shoulder-to-shoulder distance is glenohumeral center width (~0.82x bideltoid breadth D13)
+  const shoulderJointWidthCm = Math.max(28, Number((d.D13 * 0.82).toFixed(1)));
+  // Eye height standing (B3) directly aligns with MediaPipe LEFT_EYE/RIGHT_EYE landmarks!
+  const eyeHeightCm = d.B3;
+  // Shoulder-to-hip torso bone length from sitting shoulder height (D4) minus gluteal soft tissue (~10 cm)
+  const torsoSegmentCm = Math.max(35, Number((d.D4 - 10).toFixed(1)));
 
   return {
     upperArmCm,
     forearmCm: d.D21,
     lowerLegBoneCm,
     kneeToFloorCm: d.D7,
+    kneeJointHeightCm,
+    shoulderJointHeightCm,
     shoulderToAnkleCm,
     shoulderWidthCm: d.D13,
+    shoulderJointWidthCm,
+    eyeHeightCm,
     footLengthCm: d.T5,
     ankleHeightCm,
     torsoSegmentCm,

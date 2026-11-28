@@ -101,6 +101,7 @@ export const App: React.FC = () => {
       const calibration = calibrateFromAnthropometry(cap.landmarks2D, w, h, selectedProfile, {
         cameraViewMode,
         manualReference: manualRef,
+        worldLandmarks: cap.worldLandmarks,
       });
       const angles = extractBodyAngles(cap.landmarks2D, w, h, cap.worldLandmarks);
       const activeSide = sideSelection === 'auto' ? angles.dominantSide : sideSelection;

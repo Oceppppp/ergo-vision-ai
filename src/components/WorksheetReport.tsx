@@ -233,11 +233,11 @@ export const WorksheetReport: React.FC<WorksheetReportProps> = ({
             </div>
 
             {card.capture ? (
-              <div className="overflow-hidden rounded-lg border border-slate-300 bg-black">
+              <div className="flex justify-center overflow-hidden rounded-lg border border-slate-300 bg-[#0D1520] p-1.5">
                 <img
                   src={card.capture.annotatedImageDataUrl}
                   alt={card.title}
-                  className="max-h-60 w-full object-contain"
+                  className="max-h-96 w-auto rounded object-contain"
                 />
               </div>
             ) : (

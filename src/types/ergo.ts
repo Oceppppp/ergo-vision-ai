@@ -86,11 +86,23 @@ export interface SegmentScaleSample {
 
 export interface CalibrationResult {
   cmPerPixel: number;
+  /** Calibrated conversion factor from MediaPipe 3D worldLandmarks (meters) to real cm for this subject */
+  realCmPerWorldMeter: number;
   methodUsed: CalibrationMethod;
   detectedView: 'side' | 'front_top';
   confidence: number; // 0..1
   segmentsUsed: SegmentScaleSample[];
   floorY: number; // pixel Y of floor anchored at heels
+  standingLocked?: boolean;
+}
+
+export interface StandingAnchor {
+  cmPerPixel: number;
+  realCmPerWorldMeter: number;
+  floorY: number;
+  confidence: number;
+  segmentsUsed: SegmentScaleSample[];
+  capturedAtSec: number;
 }
 
 export interface ErgonomicZones {
@@ -121,6 +133,8 @@ export interface BodyAngles {
   rightLowerArmFlexionDeg: number;
   leftWristFlexionDeg: number;
   rightWristFlexionDeg: number;
+  leftArmCrossesMidline: boolean;
+  rightArmCrossesMidline: boolean;
   asymmetryAngleDeg: number; // NIOSH A (0..135+)
   feetVisible: boolean;
   kneelingSuspected: boolean;

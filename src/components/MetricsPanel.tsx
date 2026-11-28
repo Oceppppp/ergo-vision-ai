@@ -126,7 +126,11 @@ export const MetricsPanel: React.FC<MetricsPanelProps> = ({
                 <div className="mb-2 flex items-center justify-between">
                   <span className="text-xs font-bold text-[#142130]">Pengukuran Jarak & Sudut Frame Aktif</span>
                   <span className="font-numeric rounded bg-white px-1.5 py-0.5 text-[10.5px] font-semibold text-[#0F5BD8] border border-blue-200">
-                    {liveFrame.calibration.methodUsed === 'manual_reference' ? 'Manual 2-Titik' : `Antropometri ${profile.name}`}
+                    {liveFrame.calibration.methodUsed === 'manual_reference'
+                      ? 'Manual 2-Titik'
+                      : liveFrame.calibration.standingLocked
+                        ? `Berdiri Terkunci (${profile.name})`
+                        : `Antropometri ${profile.name}`}
                   </span>
                 </div>
                 <div className="grid grid-cols-3 gap-2 font-numeric text-center">
